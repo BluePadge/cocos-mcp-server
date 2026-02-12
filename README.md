@@ -216,25 +216,30 @@ args = ["/你的项目根目录/extensions/cocos-mcp-server/dist/stdio-http-brid
 
 ## MCP 协议合规说明（2026-02-12）
 
+### 传输与路由
+- `POST /mcp`：仅支持**单条** JSON-RPC 消息（不支持 batch，batch 会返回 `-32600`）。
+- `GET /mcp` + `Accept: text/event-stream`：建立 Streamable HTTP（SSE）连接。
+- `DELETE /mcp`：携带 `MCP-Session-Id` 关闭会话与对应 SSE 连接。
+
 ### 会话与生命周期
-- `initialize` 成功后，服务端会在 HTTP 响应头返回 `MCP-Session-Id`。
-- 除 `initialize` 外，所有 `/mcp` 请求都必须携带该 header；缺失或无效将返回 `HTTP 400`。
+- `initialize` 成功后，服务端在响应头返回 `MCP-Session-Id`。
+- 除 `initialize` 外，所有 `/mcp` 请求都必须携带该 header；缺失或无效返回 `HTTP 400`。
 - 客户端需发送 `notifications/initialized` 将会话切换到 `ready`；该通知返回 `202` 且无响应体。
 
-### 错误码语义
-- `-32700`：Parse error（请求体不是合法 JSON）
-- `-32600`：Invalid request（消息结构非法、生命周期不合法等）
-- `-32601`：Method not found（未知方法）
-- `-32602`：Invalid params（参数错误或工具不存在）
-- `-32603`：Internal error（服务器内部异常）
+### 方法与元数据
+- `tools/list`：返回 V2 工具清单，每个工具带 `_meta`（`layer/category/safety/idempotent/supportsDryRun`）。
+- `tools/call`：返回 `structuredContent`（统一成功/失败结构）与 `content` 文本摘要。
+- `get_tool_manifest`：查询单工具完整 manifest（含 `inputSchema/outputSchema/examples`）。
+- `get_trace_by_id`：按 `traceId` 查询最近调用记录。
 
-### tools/call 结果约定
-- 工具执行业务失败时，服务端返回 `result.isError=true`，并在 `result.content[0].text` 保留工具原始结果。
-- 协议级错误才会进入 JSON-RPC `error` 字段。
+### 错误语义
+- 协议错误使用 JSON-RPC `error`：`-32700/-32600/-32601/-32602/-32603`。
+- 业务错误使用工具结果：`result.isError=true` + `result.structuredContent.error.code`（`E_*`）。
+- 业务成功/失败都包含 `meta.traceId/tool/version/durationMs/timestamp`。
 
-### Streamable HTTP（SSE）
-- `GET /mcp` 且 `Accept: text/event-stream` 可建立 SSE 连接。
-- 建立 SSE 时同样必须携带有效 `MCP-Session-Id`，且会话需处于 `ready` 状态。
+### stdio 桥接
+- `stdio-http-bridge` 使用标准“每行一条 JSON-RPC”协议，不使用 `Content-Length` 帧。
+- 桥接会在 `initialize` 后自动缓存并透传 `MCP-Session-Id`，用于后续请求。
 
 ## 功能特性
 

@@ -86,6 +86,42 @@ function postRaw(port: number, body: string, sessionId?: string): Promise<HttpRe
     });
 }
 
+function deleteSession(port: number, sessionId?: string): Promise<HttpResult> {
+    return new Promise((resolve, reject) => {
+        const headers: Record<string, string> = {};
+        if (sessionId) {
+            headers['MCP-Session-Id'] = sessionId;
+        }
+
+        const req = http.request(
+            {
+                method: 'DELETE',
+                host: '127.0.0.1',
+                port,
+                path: '/mcp',
+                headers
+            },
+            (res) => {
+                let data = '';
+                res.setEncoding('utf8');
+                res.on('data', (chunk) => {
+                    data += chunk;
+                });
+                res.on('end', () => {
+                    resolve({
+                        statusCode: res.statusCode || 0,
+                        headers: res.headers,
+                        body: data
+                    });
+                });
+            }
+        );
+
+        req.on('error', reject);
+        req.end();
+    });
+}
+
 function parseJson(body: string): any {
     if (!body.trim()) {
         return null;
@@ -121,7 +157,7 @@ async function main(): Promise<void> {
         assert.strictEqual(parseError.statusCode, 400);
         assert.strictEqual(parseJson(parseError.body).error.code, -32700);
 
-        // 2. 空 batch => -32600
+        // 2. POST batch 在 V2 中不支持 => -32600
         const emptyBatch = await postRaw(port, '[]');
         assert.strictEqual(emptyBatch.statusCode, 200);
         assert.strictEqual(parseJson(emptyBatch.body).error.code, -32600);
@@ -165,32 +201,26 @@ async function main(): Promise<void> {
         assert.strictEqual(initializedNotification.statusCode, 202);
         assert.strictEqual(initializedNotification.body, '');
 
-        // 3. 仅 notification batch => 202
-        const notificationBatch = await postRaw(
+        // 3. notification（单消息）=> 202 且无 body
+        const progressNotification = await postRaw(
             port,
-            JSON.stringify([
-                { jsonrpc: '2.0', method: 'notifications/progress', params: { value: 1 } },
-                { jsonrpc: '2.0', method: 'notifications/custom' }
-            ]),
+            JSON.stringify({ jsonrpc: '2.0', method: 'notifications/progress', params: { value: 1 } }),
             sessionId
         );
-        assert.strictEqual(notificationBatch.statusCode, 202);
-        assert.strictEqual(notificationBatch.body, '');
+        assert.strictEqual(progressNotification.statusCode, 202);
+        assert.strictEqual(progressNotification.body, '');
 
-        // 4. request+notification 混合 batch => 仅返回 request 响应
-        const mixedBatch = await postRaw(
+        // 4. tools/list 返回 V2 列表（含 _meta）
+        const listResult = await postRaw(
             port,
-            JSON.stringify([
-                { jsonrpc: '2.0', id: 4, method: 'tools/list' },
-                { jsonrpc: '2.0', method: 'notifications/progress', params: { value: 2 } }
-            ]),
+            JSON.stringify({ jsonrpc: '2.0', id: 4, method: 'tools/list' }),
             sessionId
         );
-        assert.strictEqual(mixedBatch.statusCode, 200);
-        const mixedBody = parseJson(mixedBatch.body);
-        assert.ok(Array.isArray(mixedBody));
-        assert.strictEqual(mixedBody.length, 1);
-        assert.strictEqual(mixedBody[0].id, 4);
+        assert.strictEqual(listResult.statusCode, 200);
+        const listBody = parseJson(listResult.body);
+        assert.ok(Array.isArray(listBody.result.tools));
+        assert.ok(listBody.result.tools.length > 0);
+        assert.ok(listBody.result.tools[0]._meta);
 
         // 8. 未知方法 => -32601
         const unknownMethod = await postRaw(
@@ -210,7 +240,7 @@ async function main(): Promise<void> {
         assert.strictEqual(missingName.statusCode, 200);
         assert.strictEqual(parseJson(missingName.body).error.code, -32602);
 
-        // 10. 工具业务失败 => result.isError = true
+        // 10. 工具业务失败 => result.isError = true + structuredContent.success=false
         const businessFailure = await postRaw(
             port,
             JSON.stringify({
@@ -229,6 +259,52 @@ async function main(): Promise<void> {
         assert.strictEqual(businessFailure.statusCode, 200);
         const businessBody = parseJson(businessFailure.body);
         assert.strictEqual(businessBody.result.isError, true);
+        assert.strictEqual(businessBody.result.structuredContent.success, false);
+        assert.ok(typeof businessBody.result.structuredContent.error.code === 'string');
+
+        // 11. get_tool_manifest 可查询工具元数据
+        const manifestResult = await postRaw(
+            port,
+            JSON.stringify({
+                jsonrpc: '2.0',
+                id: 8,
+                method: 'get_tool_manifest',
+                params: { name: 'mock_echo' }
+            }),
+            sessionId
+        );
+        assert.strictEqual(manifestResult.statusCode, 200);
+        const manifestBody = parseJson(manifestResult.body);
+        assert.strictEqual(manifestBody.result.name, 'mock_echo');
+        assert.ok(typeof manifestBody.result.layer === 'string');
+
+        // 12. get_trace_by_id 可查询调用记录
+        const traceId = businessBody.result.structuredContent.meta.traceId;
+        const traceResult = await postRaw(
+            port,
+            JSON.stringify({
+                jsonrpc: '2.0',
+                id: 9,
+                method: 'get_trace_by_id',
+                params: { traceId }
+            }),
+            sessionId
+        );
+        assert.strictEqual(traceResult.statusCode, 200);
+        const traceBody = parseJson(traceResult.body);
+        assert.strictEqual(traceBody.result.trace.traceId, traceId);
+
+        // 13. DELETE /mcp 关闭会话
+        const deleteResult = await deleteSession(port, sessionId);
+        assert.strictEqual(deleteResult.statusCode, 204);
+
+        // 14. 会话删除后再次调用 => HTTP 400
+        const afterDelete = await postRaw(
+            port,
+            JSON.stringify({ jsonrpc: '2.0', id: 10, method: 'tools/list' }),
+            sessionId
+        );
+        assert.strictEqual(afterDelete.statusCode, 400);
 
         console.log('mcp-protocol-compliance-test: PASS');
     } finally {

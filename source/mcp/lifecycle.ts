@@ -6,6 +6,8 @@ export const MCP_METHODS = {
     InitializedNotification: 'notifications/initialized',
     ToolsList: 'tools/list',
     ToolsCall: 'tools/call',
+    GetToolManifest: 'get_tool_manifest',
+    GetTraceById: 'get_trace_by_id',
     Ping: 'ping'
 } as const;
 

@@ -217,25 +217,30 @@ Bridge protocol note: `stdio-http-bridge` now uses standard newline-delimited JS
 
 ## MCP Compliance Notes (2026-02-12)
 
+### Transport and routes
+- `POST /mcp`: accepts **single** JSON-RPC message only (batch is rejected with `-32600`).
+- `GET /mcp` + `Accept: text/event-stream`: opens Streamable HTTP (SSE).
+- `DELETE /mcp`: requires `MCP-Session-Id` and closes the session plus related SSE connections.
+
 ### Session and lifecycle
 - After `initialize`, the server returns `MCP-Session-Id` in response headers.
 - All `/mcp` requests except `initialize` must include that header; missing/invalid header returns `HTTP 400`.
 - Client should send `notifications/initialized` to move session to `ready`; this notification returns `202` with empty body.
 
-### Error code semantics
-- `-32700`: Parse error (invalid JSON payload)
-- `-32600`: Invalid request (invalid message shape or lifecycle state)
-- `-32601`: Method not found
-- `-32602`: Invalid params (invalid arguments or unknown tool)
-- `-32603`: Internal error
+### Methods and metadata
+- `tools/list`: returns V2 tool list with `_meta` (`layer/category/safety/idempotent/supportsDryRun`).
+- `tools/call`: returns normalized `structuredContent` plus text `content`.
+- `get_tool_manifest`: fetches full manifest for one tool (`inputSchema/outputSchema/examples`).
+- `get_trace_by_id`: fetches recent call trace details by `traceId`.
 
-### `tools/call` result mapping
-- Business-level tool failures are returned as `result.isError=true`, with original tool output preserved in `result.content[0].text`.
-- Only protocol-level failures are returned in JSON-RPC `error`.
+### Error semantics
+- Protocol errors use JSON-RPC `error`: `-32700/-32600/-32601/-32602/-32603`.
+- Business errors use tool result: `result.isError=true` + `result.structuredContent.error.code` (`E_*`).
+- Both success and failure include `meta.traceId/tool/version/durationMs/timestamp`.
 
-### Streamable HTTP (SSE)
-- `GET /mcp` with `Accept: text/event-stream` opens an SSE stream.
-- SSE also requires a valid `MCP-Session-Id` and a session already in `ready` state.
+### stdio bridge
+- `stdio-http-bridge` uses standard newline-delimited JSON-RPC (one message per line), no `Content-Length` framing.
+- The bridge automatically captures and forwards `MCP-Session-Id` after `initialize`.
 
 ## Features
 

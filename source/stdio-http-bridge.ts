@@ -11,6 +11,7 @@ interface BridgeOptions {
 interface HttpResponse {
     statusCode: number;
     body: string;
+    headers: http.IncomingHttpHeaders;
 }
 
 interface JsonRpcErrorResponse {
@@ -29,6 +30,7 @@ class StdioHttpBridge {
     private readonly options: BridgeOptions;
     private buffer = '';
     private processingQueue: Promise<void> = Promise.resolve();
+    private sessionId: string | null = null;
 
     constructor(options: BridgeOptions) {
         this.options = options;
@@ -108,7 +110,9 @@ class StdioHttpBridge {
         const expectsResponse = this.expectsResponse(message);
 
         try {
-            const response = await this.forwardToHttp(messageText);
+            const response = await this.forwardToHttp(messageText, message);
+
+            this.captureSessionId(message, response.headers);
 
             if (!expectsResponse) {
                 return;
@@ -195,21 +199,18 @@ class StdioHttpBridge {
         };
     }
 
-    private async forwardToHttp(rawBody: string): Promise<HttpResponse> {
+    private async forwardToHttp(rawBody: string, message: unknown): Promise<HttpResponse> {
         const endpointUrl = new URL(this.options.endpoint);
         const client = endpointUrl.protocol === 'https:' ? https : http;
         const payload = Buffer.from(rawBody, 'utf8');
+        const headers = this.buildRequestHeaders(message, payload.length);
 
         return new Promise<HttpResponse>((resolve, reject) => {
             const request = client.request(
                 endpointUrl,
                 {
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Content-Length': String(payload.length),
-                        Accept: 'application/json'
-                    }
+                    headers
                 },
                 (response) => {
                     const chunks: Buffer[] = [];
@@ -227,7 +228,11 @@ class StdioHttpBridge {
                             return;
                         }
 
-                        resolve({ statusCode, body });
+                        resolve({
+                            statusCode,
+                            body,
+                            headers: response.headers
+                        });
                     });
                 }
             );
@@ -243,6 +248,54 @@ class StdioHttpBridge {
             request.write(payload);
             request.end();
         });
+    }
+
+    private buildRequestHeaders(message: unknown, payloadLength: number): Record<string, string> {
+        const headers: Record<string, string> = {
+            'Content-Type': 'application/json',
+            'Content-Length': String(payloadLength),
+            Accept: 'application/json'
+        };
+
+        if (this.sessionId && this.requiresSessionHeader(message)) {
+            headers['MCP-Session-Id'] = this.sessionId;
+        }
+
+        return headers;
+    }
+
+    private requiresSessionHeader(message: unknown): boolean {
+        if (!message || typeof message !== 'object' || Array.isArray(message)) {
+            return false;
+        }
+
+        const method = (message as any).method;
+        if (typeof method !== 'string') {
+            return false;
+        }
+
+        return method !== 'initialize';
+    }
+
+    private captureSessionId(message: unknown, headers: http.IncomingHttpHeaders): void {
+        if (!message || typeof message !== 'object' || Array.isArray(message)) {
+            return;
+        }
+
+        const method = (message as any).method;
+        if (method !== 'initialize') {
+            return;
+        }
+
+        const raw = headers['mcp-session-id'];
+        if (Array.isArray(raw)) {
+            this.sessionId = raw[0] || null;
+            return;
+        }
+
+        if (typeof raw === 'string' && raw.trim()) {
+            this.sessionId = raw;
+        }
     }
 
     private writeStdoutLine(payload: string): void {
