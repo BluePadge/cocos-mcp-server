@@ -19,6 +19,15 @@ export const methods: { [key: string]: (...any: any) => any } = {
         Editor.Panel.open('cocos-mcp-server');
     },
 
+    /**
+     * @en Open the tool manager panel
+     * @zh 打开工具管理面板
+     */
+    openToolManager() {
+        // 当前版本将工具管理合并在主面板内，保持兼容旧消息入口
+        Editor.Panel.open('cocos-mcp-server');
+    },
+
 
 
     /**
@@ -65,16 +74,29 @@ export const methods: { [key: string]: (...any: any) => any } = {
      * @en Update server settings
      * @zh 更新服务器设置
      */
-    updateSettings(settings: MCPServerSettings) {
+    async updateSettings(settings: MCPServerSettings) {
         saveSettings(settings);
+        const wasRunning = mcpServer ? mcpServer.getStatus().running : false;
+
         if (mcpServer) {
             mcpServer.stop();
-            mcpServer = new MCPServer(settings);
-            mcpServer.start();
-        } else {
-            mcpServer = new MCPServer(settings);
-            mcpServer.start();
         }
+
+        mcpServer = new MCPServer(settings);
+
+        // 保持工具配置与新实例同步
+        const enabledTools = toolManager.getEnabledTools();
+        mcpServer.updateEnabledTools(enabledTools);
+
+        // 仅在原本已运行时重启，避免“保存设置”意外启动服务
+        if (wasRunning) {
+            await mcpServer.start();
+        }
+
+        return {
+            success: true,
+            restarted: wasRunning
+        };
     },
 
     /**
@@ -152,8 +174,25 @@ export const methods: { [key: string]: (...any: any) => any } = {
         }
     },
 
-    async updateToolStatus(category: string, toolName: string, enabled: boolean) {
+    async updateToolStatus(...args: any[]) {
         try {
+            // 兼容两种调用方式：
+            // 1) (category, toolName, enabled)
+            // 2) (configId, category, toolName, enabled) - 旧面板调用方式
+            let category: string;
+            let toolName: string;
+            let enabled: boolean;
+
+            if (args.length === 4) {
+                category = args[1];
+                toolName = args[2];
+                enabled = args[3];
+            } else {
+                category = args[0];
+                toolName = args[1];
+                enabled = args[2];
+            }
+
             const currentConfig = toolManager.getCurrentConfiguration();
             if (!currentConfig) {
                 throw new Error('没有当前配置');
@@ -173,8 +212,12 @@ export const methods: { [key: string]: (...any: any) => any } = {
         }
     },
 
-    async updateToolStatusBatch(updates: any[]) {
+    async updateToolStatusBatch(...args: any[]) {
         try {
+            // 兼容两种调用方式：
+            // 1) (updates)
+            // 2) (configId, updates) - 旧面板调用方式
+            const updates = args.length === 2 ? args[1] : args[0];
             console.log(`[Main] updateToolStatusBatch called with updates count:`, updates ? updates.length : 0);
             
             const currentConfig = toolManager.getCurrentConfiguration();

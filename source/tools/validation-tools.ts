@@ -1,4 +1,5 @@
 import { ToolDefinition, ToolResponse, ToolExecutor } from '../types';
+import { readSettings } from '../settings';
 
 export class ValidationTools implements ToolExecutor {
     getTools(): ToolDefinition[] {
@@ -202,7 +203,7 @@ export class ValidationTools implements ToolExecutor {
             .replace(/\r/g, '\\r')   // Escape carriage returns
             .replace(/\t/g, '\\t')   // Escape tabs
             .replace(/\f/g, '\\f')   // Escape form feeds
-            .replace(/\b/g, '\\b');  // Escape backspaces
+            .replace(/\u0008/g, '\\b');  // Escape backspaces
     }
 
     private validateAgainstSchema(data: any, schema: any): { valid: boolean; errors: string[]; suggestions: string[] } {
@@ -256,8 +257,21 @@ export class ValidationTools implements ToolExecutor {
 
     private generateCurlCommand(jsonStr: string): string {
         const escapedJson = jsonStr.replace(/'/g, "'\"'\"'");
-        return `curl -X POST http://127.0.0.1:8585/mcp \\
+        const port = this.getConfiguredPort();
+        return `curl -X POST http://127.0.0.1:${port}/mcp \\
   -H "Content-Type: application/json" \\
   -d '${escapedJson}'`;
+    }
+
+    private getConfiguredPort(): number {
+        try {
+            const settings = readSettings();
+            if (Number.isInteger(settings.port) && settings.port > 0) {
+                return settings.port;
+            }
+        } catch (error) {
+            console.warn('[ValidationTools] Failed to read settings port, fallback to 3000:', error);
+        }
+        return 3000;
     }
 }

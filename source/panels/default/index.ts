@@ -2,7 +2,7 @@
 
 import { readFileSync } from 'fs-extra';
 import { join } from 'path';
-import { createApp, App, defineComponent, ref, computed, onMounted, watch, nextTick } from 'vue';
+import { createApp, App, defineComponent, ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue';
 
 const panelDataMap = new WeakMap<any, App>();
 
@@ -29,6 +29,7 @@ interface ServerSettings {
     port: number;
     autoStart: boolean;
     debugLog: boolean;
+    allowedOrigins: string[];
     maxConnections: number;
 }
 
@@ -67,8 +68,12 @@ module.exports = Editor.Panel.define({
                         port: 3000,
                         autoStart: false,
                         debugLog: false,
+                        allowedOrigins: ['*'],
                         maxConnections: 10
                     });
+
+                    // 保存轮询定时器句柄，确保面板销毁时清理
+                    let statusPollTimer: ReturnType<typeof setInterval> | null = null;
                     
                     const availableTools = ref<ToolConfig[]>([]);
                     const toolCategories = ref<string[]>([]);
@@ -107,6 +112,7 @@ module.exports = Editor.Panel.define({
                                     port: settings.value.port,
                                     autoStart: settings.value.autoStart,
                                     enableDebugLog: settings.value.debugLog,
+                                    allowedOrigins: settings.value.allowedOrigins,
                                     maxConnections: settings.value.maxConnections
                                 };
                                 await Editor.Message.request('cocos-mcp-server', 'update-settings', currentSettings);
@@ -124,7 +130,8 @@ module.exports = Editor.Panel.define({
                             const settingsData = {
                                 port: settings.value.port,
                                 autoStart: settings.value.autoStart,
-                                debugLog: settings.value.debugLog,
+                                enableDebugLog: settings.value.debugLog,
+                                allowedOrigins: settings.value.allowedOrigins,
                                 maxConnections: settings.value.maxConnections
                             };
                             
@@ -143,6 +150,31 @@ module.exports = Editor.Panel.define({
                         } catch (error) {
                             console.error('[Vue App] Failed to copy URL:', error);
                         }
+                    };
+
+                    const stopStatusPolling = () => {
+                        if (statusPollTimer) {
+                            clearInterval(statusPollTimer);
+                            statusPollTimer = null;
+                        }
+                    };
+
+                    const startStatusPolling = () => {
+                        stopStatusPolling();
+                        statusPollTimer = setInterval(async () => {
+                            try {
+                                const result = await Editor.Message.request('cocos-mcp-server', 'get-server-status');
+                                if (result) {
+                                    serverRunning.value = result.running;
+                                    serverStatus.value = result.running ? '运行中' : '已停止';
+                                    connectedClients.value = result.clients || 0;
+                                    httpUrl.value = result.running ? `http://localhost:${result.port}` : '';
+                                    isProcessing.value = false;
+                                }
+                            } catch (error) {
+                                console.error('[Vue App] Failed to get server status:', error);
+                            }
+                        }, 2000);
                     };
                     
                     const loadToolManagerState = async () => {
@@ -299,10 +331,15 @@ module.exports = Editor.Panel.define({
                         try {
                             const serverStatus = await Editor.Message.request('cocos-mcp-server', 'get-server-status');
                             if (serverStatus && serverStatus.settings) {
+                                const rawAllowedOrigins = serverStatus.settings.allowedOrigins;
+                                const normalizedAllowedOrigins = Array.isArray(rawAllowedOrigins)
+                                    ? rawAllowedOrigins
+                                    : ['*'];
                                 settings.value = {
                                     port: serverStatus.settings.port || 3000,
                                     autoStart: serverStatus.settings.autoStart || false,
                                     debugLog: serverStatus.settings.enableDebugLog || false,
+                                    allowedOrigins: normalizedAllowedOrigins,
                                     maxConnections: serverStatus.settings.maxConnections || 10
                                 };
                                 console.log('[Vue App] Server settings loaded from status:', serverStatus.settings);
@@ -311,26 +348,19 @@ module.exports = Editor.Panel.define({
                                 settings.value.port = serverStatus.port;
                                 console.log('[Vue App] Port loaded from server status:', serverStatus.port);
                             }
+                            // 初始化加载后，重置“已修改”状态
+                            settingsChanged.value = false;
                         } catch (error) {
                             console.error('[Vue App] Failed to get server status:', error);
                             console.log('[Vue App] Using default server settings');
                         }
                         
                         // 定期更新服务器状态
-                        setInterval(async () => {
-                            try {
-                                const result = await Editor.Message.request('cocos-mcp-server', 'get-server-status');
-                                if (result) {
-                                    serverRunning.value = result.running;
-                                    serverStatus.value = result.running ? '运行中' : '已停止';
-                                    connectedClients.value = result.clients || 0;
-                                    httpUrl.value = result.running ? `http://localhost:${result.port}` : '';
-                                    isProcessing.value = false;
-                                }
-                            } catch (error) {
-                                console.error('[Vue App] Failed to get server status:', error);
-                            }
-                        }, 2000);
+                        startStatusPolling();
+                    });
+
+                    onBeforeUnmount(() => {
+                        stopStatusPolling();
                     });
                     
                     return {

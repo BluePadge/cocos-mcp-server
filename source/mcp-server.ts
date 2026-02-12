@@ -63,6 +63,7 @@ export class MCPServer {
         try {
             console.log(`[MCPServer] Starting HTTP server on port ${this.settings.port}...`);
             this.httpServer = http.createServer(this.handleHttpRequest.bind(this));
+            this.httpServer.maxConnections = this.settings.maxConnections;
 
             await new Promise<void>((resolve, reject) => {
                 this.httpServer!.listen(this.settings.port, '127.0.0.1', () => {
@@ -168,7 +169,7 @@ export class MCPServer {
         const pathname = parsedUrl.pathname;
         
         // Set CORS headers
-        res.setHeader('Access-Control-Allow-Origin', '*');
+        this.applyCorsHeaders(req, res);
         res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
         res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
         res.setHeader('Content-Type', 'application/json');
@@ -210,20 +211,11 @@ export class MCPServer {
         
         req.on('end', async () => {
             try {
-                // Enhanced JSON parsing with better error handling
-                let message;
-                try {
-                    message = JSON.parse(body);
-                } catch (parseError: any) {
-                    // Try to fix common JSON issues
-                    const fixedBody = this.fixCommonJsonIssues(body);
-                    try {
-                        message = JSON.parse(fixedBody);
-                        console.log('[MCPServer] Fixed JSON parsing issue');
-                    } catch (secondError) {
-                        throw new Error(`JSON parsing failed: ${parseError.message}. Original body: ${body.substring(0, 500)}...`);
-                    }
-                }
+                // MCP 请求使用严格 JSON 解析，避免正则修复造成参数被意外改写
+                const message = this.parseJsonBody(body, {
+                    allowEmpty: false,
+                    routeName: 'MCP'
+                });
                 
                 const response = await this.handleMessage(message);
                 res.writeHead(200);
@@ -254,7 +246,11 @@ export class MCPServer {
                     result = { tools: this.getAvailableTools() };
                     break;
                 case 'tools/call':
-                    const { name, arguments: args } = params;
+                    if (!params || typeof params.name !== 'string' || !params.name) {
+                        throw new Error('Invalid params for tools/call: "name" is required');
+                    }
+                    const name = params.name;
+                    const args = params.arguments ?? {};
                     const toolResult = await this.executeToolCall(name, args);
                     result = { content: [{ type: 'text', text: JSON.stringify(toolResult) }] };
                     break;
@@ -290,27 +286,6 @@ export class MCPServer {
                 }
             };
         }
-    }
-
-    private fixCommonJsonIssues(jsonStr: string): string {
-        let fixed = jsonStr;
-        
-        // Fix common escape character issues
-        fixed = fixed
-            // Fix unescaped quotes in strings
-            .replace(/([^\\])"([^"]*[^\\])"([^,}\]:])/g, '$1\\"$2\\"$3')
-            // Fix unescaped backslashes
-            .replace(/([^\\])\\([^"\\\/bfnrt])/g, '$1\\\\$2')
-            // Fix trailing commas
-            .replace(/,(\s*[}\]])/g, '$1')
-            // Fix single quotes (should be double quotes)
-            .replace(/'/g, '"')
-            // Fix common control characters
-            .replace(/\n/g, '\\n')
-            .replace(/\r/g, '\\r')
-            .replace(/\t/g, '\\t');
-        
-        return fixed;
     }
 
     public stop(): void {
@@ -355,22 +330,18 @@ export class MCPServer {
                 // Parse parameters with enhanced error handling
                 let params;
                 try {
-                    params = body ? JSON.parse(body) : {};
+                    params = this.parseJsonBody(body, {
+                        allowEmpty: true,
+                        routeName: 'SimpleAPI'
+                    });
                 } catch (parseError: any) {
-                    // Try to fix JSON issues
-                    const fixedBody = this.fixCommonJsonIssues(body);
-                    try {
-                        params = JSON.parse(fixedBody);
-                        console.log('[MCPServer] Fixed API JSON parsing issue');
-                    } catch (secondError: any) {
-                        res.writeHead(400);
-                        res.end(JSON.stringify({
-                            error: 'Invalid JSON in request body',
-                            details: parseError.message,
-                            receivedBody: body.substring(0, 200)
-                        }));
-                        return;
-                    }
+                    res.writeHead(400);
+                    res.end(JSON.stringify({
+                        error: 'Invalid JSON in request body',
+                        details: parseError.message,
+                        receivedBody: body.substring(0, 200)
+                    }));
+                    return;
                 }
                 
                 // Execute tool
@@ -417,7 +388,7 @@ export class MCPServer {
         const sampleParams = this.generateSampleParams(schema);
         const jsonString = JSON.stringify(sampleParams, null, 2);
         
-        return `curl -X POST http://127.0.0.1:8585/api/${category}/${toolName} \\
+        return `curl -X POST http://127.0.0.1:${this.settings.port}/api/${category}/${toolName} \\
   -H "Content-Type: application/json" \\
   -d '${jsonString}'`;
     }
@@ -448,12 +419,56 @@ export class MCPServer {
         return sample;
     }
 
+    private parseJsonBody(
+        rawBody: string,
+        options: { allowEmpty: boolean; routeName: string }
+    ): any {
+        const body = rawBody.trim();
+
+        if (!body) {
+            if (options.allowEmpty) {
+                return {};
+            }
+            throw new Error(`${options.routeName} request body is empty`);
+        }
+
+        try {
+            return JSON.parse(body);
+        } catch (error: any) {
+            throw new Error(
+                `${options.routeName} JSON parse failed: ${error.message}. ` +
+                '请确保请求体是合法 JSON；必要时可先调用 validation_validate_json_params 进行检查。'
+            );
+        }
+    }
+
     public updateSettings(settings: MCPServerSettings) {
         this.settings = settings;
         if (this.httpServer) {
             this.stop();
             this.start();
         }
+    }
+
+    private applyCorsHeaders(req: http.IncomingMessage, res: http.ServerResponse): void {
+        const allowedOrigins = this.settings.allowedOrigins && this.settings.allowedOrigins.length > 0
+            ? this.settings.allowedOrigins
+            : ['*'];
+        const requestOrigin = req.headers.origin;
+
+        if (allowedOrigins.includes('*')) {
+            res.setHeader('Access-Control-Allow-Origin', '*');
+            return;
+        }
+
+        if (typeof requestOrigin === 'string' && allowedOrigins.includes(requestOrigin)) {
+            res.setHeader('Access-Control-Allow-Origin', requestOrigin);
+            res.setHeader('Vary', 'Origin');
+            return;
+        }
+
+        // 在未命中来源时使用首个允许来源，避免返回无效CORS头
+        res.setHeader('Access-Control-Allow-Origin', allowedOrigins[0]);
     }
 }
 
