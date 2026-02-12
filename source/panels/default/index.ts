@@ -93,6 +93,28 @@ module.exports = Editor.Panel.define({
 
                     
                     const settingsChanged = ref(false);
+
+                    const normalizeAllowedOrigins = (origins: unknown): string[] => {
+                        if (!Array.isArray(origins)) {
+                            return ['*'];
+                        }
+
+                        const normalized = origins
+                            .filter((item): item is string => typeof item === 'string')
+                            .map(item => item.trim())
+                            .filter(item => item.length > 0);
+
+                        return normalized.length > 0 ? normalized : ['*'];
+                    };
+
+                    const createSettingsPayload = () => ({
+                        port: Number(settings.value.port) || 3000,
+                        autoStart: Boolean(settings.value.autoStart),
+                        enableDebugLog: Boolean(settings.value.debugLog),
+                        // 强制转换为纯数组，避免 Vue Proxy 导致 IPC 克隆失败
+                        allowedOrigins: [...normalizeAllowedOrigins(settings.value.allowedOrigins)],
+                        maxConnections: Number(settings.value.maxConnections) || 10
+                    });
                     
                     // 方法
                     const switchTab = (tabName: string) => {
@@ -108,13 +130,7 @@ module.exports = Editor.Panel.define({
                                 await Editor.Message.request('cocos-mcp-server', 'stop-server');
                             } else {
                                 // 启动服务器时使用当前面板设置
-                                const currentSettings = {
-                                    port: settings.value.port,
-                                    autoStart: settings.value.autoStart,
-                                    enableDebugLog: settings.value.debugLog,
-                                    allowedOrigins: settings.value.allowedOrigins,
-                                    maxConnections: settings.value.maxConnections
-                                };
+                                const currentSettings = createSettingsPayload();
                                 await Editor.Message.request('cocos-mcp-server', 'update-settings', currentSettings);
                                 await Editor.Message.request('cocos-mcp-server', 'start-server');
                             }
@@ -127,13 +143,7 @@ module.exports = Editor.Panel.define({
                     const saveSettings = async () => {
                         try {
                             // 创建一个简单的对象，避免克隆错误
-                            const settingsData = {
-                                port: settings.value.port,
-                                autoStart: settings.value.autoStart,
-                                enableDebugLog: settings.value.debugLog,
-                                allowedOrigins: settings.value.allowedOrigins,
-                                maxConnections: settings.value.maxConnections
-                            };
+                            const settingsData = createSettingsPayload();
                             
                             const result = await Editor.Message.request('cocos-mcp-server', 'update-settings', settingsData);
                             console.log('[Vue App] Save settings result:', result);

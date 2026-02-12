@@ -8,7 +8,9 @@
     "scripts": {
         "preinstall": "node ./scripts/preinstall.js",
         "build": "tsc",
-        "watch": "tsc -w"
+        "watch": "tsc -w",
+        "mcp:stdio": "node ./dist/stdio-http-bridge.js",
+        "test:mcp": "node ./dist/test/mcp-protocol-compliance-test.js && node ./dist/test/mcp-streamable-http-test.js && node ./dist/test/mcp-stdio-bridge-test.js"
     },
     "description": "i18n:cocos-mcp-server.description",
     "main": "./dist/main.js",

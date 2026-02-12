@@ -187,6 +187,55 @@ claude mcp add --transport http cocos-creator http://127.0.0.1:3000/mcp（使用
 }
 ```
 
+**Codex CLI（推荐使用 stdio 桥接，兼容性更稳）**
+
+1. 确保在 Cocos Creator 扩展面板中已启动 MCP HTTP 服务（默认 `http://127.0.0.1:3000/mcp`）。
+2. 在扩展目录执行一次构建：
+
+```bash
+npm run build
+```
+
+3. 以“当前项目会话级”方式启动 Codex（不污染全局配置）：
+
+```bash
+codex -C "/你的项目根目录" \
+  -c 'mcp_servers.cocos_creator.command="node"' \
+  -c 'mcp_servers.cocos_creator.args=["/你的项目根目录/extensions/cocos-mcp-server/dist/stdio-http-bridge.js","--url","http://127.0.0.1:3000/mcp"]'
+```
+
+如果你希望持久配置到 `~/.codex/config.toml`，可写为：
+
+```toml
+[mcp_servers.cocos_creator]
+command = "node"
+args = ["/你的项目根目录/extensions/cocos-mcp-server/dist/stdio-http-bridge.js", "--url", "http://127.0.0.1:3000/mcp"]
+```
+
+桥接协议说明：`stdio-http-bridge` 现使用“每行一条 JSON-RPC 消息”的标准换行协议，不再使用 `Content-Length` 帧。
+
+## MCP 协议合规说明（2026-02-12）
+
+### 会话与生命周期
+- `initialize` 成功后，服务端会在 HTTP 响应头返回 `MCP-Session-Id`。
+- 除 `initialize` 外，所有 `/mcp` 请求都必须携带该 header；缺失或无效将返回 `HTTP 400`。
+- 客户端需发送 `notifications/initialized` 将会话切换到 `ready`；该通知返回 `202` 且无响应体。
+
+### 错误码语义
+- `-32700`：Parse error（请求体不是合法 JSON）
+- `-32600`：Invalid request（消息结构非法、生命周期不合法等）
+- `-32601`：Method not found（未知方法）
+- `-32602`：Invalid params（参数错误或工具不存在）
+- `-32603`：Internal error（服务器内部异常）
+
+### tools/call 结果约定
+- 工具执行业务失败时，服务端返回 `result.isError=true`，并在 `result.content[0].text` 保留工具原始结果。
+- 协议级错误才会进入 JSON-RPC `error` 字段。
+
+### Streamable HTTP（SSE）
+- `GET /mcp` 且 `Accept: text/event-stream` 可建立 SSE 连接。
+- 建立 SSE 时同样必须携带有效 `MCP-Session-Id`，且会话需处于 `ready` 状态。
+
 ## 功能特性
 
 ### 🎯 场景操作 (scene_*)
@@ -423,5 +472,3 @@ npm run build
 
 ## 联系我加入群
 <img alt="image" src="https://github.com/user-attachments/assets/a276682c-4586-480c-90e5-6db132e89e0f" width="400" height="400" />
-
-

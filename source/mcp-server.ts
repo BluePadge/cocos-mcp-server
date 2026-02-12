@@ -1,6 +1,5 @@
 import * as http from 'http';
-import * as url from 'url';
-import { v4 as uuidv4 } from 'uuid';
+import { randomUUID } from 'crypto';
 import { MCPServerSettings, ServerStatus, MCPClient, ToolDefinition } from './types';
 import { SceneTools } from './tools/scene-tools';
 import { NodeTools } from './tools/node-tools';
@@ -16,21 +15,83 @@ import { SceneViewTools } from './tools/scene-view-tools';
 import { ReferenceImageTools } from './tools/reference-image-tools';
 import { AssetAdvancedTools } from './tools/asset-advanced-tools';
 import { ValidationTools } from './tools/validation-tools';
+import { createJsonRpcErrorResponse, JsonRpcErrorCode } from './mcp/errors';
+import { parseJsonRpcBody, readRawBody } from './mcp/jsonrpc';
+import {
+    JsonRpcNotification,
+    JsonRpcRequest,
+    JsonRpcResponseMessage,
+    isNotificationMessage,
+    isRecord,
+    isRequestMessage,
+    isResponseMessage
+} from './mcp/messages';
+import {
+    MCP_METHODS,
+    canHandleBeforeReady,
+    ensureInitializeIsRequest,
+    isInitializeMethod,
+    isInitializedNotification,
+    isNotificationMethod,
+    isSessionReady,
+    requiresSessionHeader
+} from './mcp/lifecycle';
+import { McpSession, SessionStore } from './mcp/session-store';
+import { StreamableHttpManager } from './mcp/streamable-http';
+
+interface ToolExecutorLike {
+    getTools(): ToolDefinition[];
+    execute(toolName: string, args: any): Promise<any>;
+}
+
+interface MCPServerDependencies {
+    toolExecutors?: Record<string, ToolExecutorLike>;
+    sessionIdGenerator?: () => string;
+    now?: () => number;
+}
+
+interface MCPRequestContext {
+    sessionId: string | null;
+    session: McpSession | null;
+}
+
+interface MessageHandleResult {
+    response: JsonRpcResponseMessage | null;
+    sessionIdToReturn?: string;
+}
+
+interface PayloadHandleResult {
+    statusCode: number;
+    body?: unknown;
+    sessionIdToReturn?: string;
+}
 
 export class MCPServer {
     private settings: MCPServerSettings;
     private httpServer: http.Server | null = null;
-    private clients: Map<string, MCPClient> = new Map();
-    private tools: Record<string, any> = {};
+    private tools: Record<string, ToolExecutorLike> = {};
     private toolsList: ToolDefinition[] = [];
     private enabledTools: any[] = []; // 存储启用的工具列表
+    private readonly sessionStore = new SessionStore();
+    private readonly streamableHttp = new StreamableHttpManager();
+    private readonly sessionIdGenerator: () => string;
+    private readonly now: () => number;
 
-    constructor(settings: MCPServerSettings) {
+    constructor(settings: MCPServerSettings, dependencies: MCPServerDependencies = {}) {
         this.settings = settings;
-        this.initializeTools();
+        this.sessionIdGenerator = dependencies.sessionIdGenerator ?? (() => randomUUID());
+        this.now = dependencies.now ?? (() => Date.now());
+        this.initializeTools(dependencies.toolExecutors);
     }
 
-    private initializeTools(): void {
+    private initializeTools(customTools?: Record<string, ToolExecutorLike>): void {
+        if (customTools) {
+            this.tools = customTools;
+            this.setupTools();
+            console.log('[MCPServer] 使用注入工具执行器初始化完成');
+            return;
+        }
+
         try {
             console.log('[MCPServer] Initializing tools...');
             this.tools.scene = new SceneTools();
@@ -91,7 +152,7 @@ export class MCPServer {
 
     private setupTools(): void {
         this.toolsList = [];
-        
+
         // 如果没有启用工具配置，返回所有工具
         if (!this.enabledTools || this.enabledTools.length === 0) {
             for (const [category, toolSet] of Object.entries(this.tools)) {
@@ -107,7 +168,7 @@ export class MCPServer {
         } else {
             // 根据启用的工具配置过滤
             const enabledToolNames = new Set(this.enabledTools.map(tool => `${tool.category}_${tool.name}`));
-            
+
             for (const [category, toolSet] of Object.entries(this.tools)) {
                 const tools = toolSet.getTools();
                 for (const tool of tools) {
@@ -122,7 +183,7 @@ export class MCPServer {
                 }
             }
         }
-        
+
         console.log(`[MCPServer] Setup tools: ${this.toolsList.length} tools available`);
     }
 
@@ -139,17 +200,21 @@ export class MCPServer {
         const parts = toolName.split('_');
         const category = parts[0];
         const toolMethodName = parts.slice(1).join('_');
-        
+
         if (this.tools[category]) {
             return await this.tools[category].execute(toolMethodName, args);
         }
-        
+
         throw new Error(`Tool ${toolName} not found`);
     }
 
     public getClients(): MCPClient[] {
-        return Array.from(this.clients.values());
+        return this.sessionStore.listSessions().map((session) => ({
+            id: session.id,
+            lastActivity: new Date(session.lastActivityAt)
+        }));
     }
+
     public getAvailableTools(): ToolDefinition[] {
         return this.toolsList;
     }
@@ -165,127 +230,496 @@ export class MCPServer {
     }
 
     private async handleHttpRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-        const parsedUrl = url.parse(req.url || '', true);
-        const pathname = parsedUrl.pathname;
-        
+        const requestUrl = new URL(req.url || '/', 'http://127.0.0.1');
+        const pathname = requestUrl.pathname;
+
+        // 先校验 Origin，未通过时直接拒绝请求
+        if (!this.isOriginAllowed(req)) {
+            this.applyCorsHeaders(req, res);
+            this.writeJsonResponse(res, 403, { error: 'Forbidden origin' });
+            return;
+        }
+
         // Set CORS headers
         this.applyCorsHeaders(req, res);
         res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-        res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-        res.setHeader('Content-Type', 'application/json');
-        
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept, MCP-Session-Id');
+
         if (req.method === 'OPTIONS') {
-            res.writeHead(200);
+            res.writeHead(204);
             res.end();
             return;
         }
-        
+
         try {
             if (pathname === '/mcp' && req.method === 'POST') {
                 await this.handleMCPRequest(req, res);
+            } else if (pathname === '/mcp' && req.method === 'GET') {
+                this.handleMCPGet(req, res);
             } else if (pathname === '/health' && req.method === 'GET') {
-                res.writeHead(200);
-                res.end(JSON.stringify({ status: 'ok', tools: this.toolsList.length }));
+                this.writeJsonResponse(res, 200, {
+                    status: 'ok',
+                    tools: this.toolsList.length,
+                    sessions: this.sessionStore.size()
+                });
             } else if (pathname?.startsWith('/api/') && req.method === 'POST') {
                 await this.handleSimpleAPIRequest(req, res, pathname);
             } else if (pathname === '/api/tools' && req.method === 'GET') {
-                res.writeHead(200);
-                res.end(JSON.stringify({ tools: this.getSimplifiedToolsList() }));
+                this.writeJsonResponse(res, 200, { tools: this.getSimplifiedToolsList() });
             } else {
-                res.writeHead(404);
-                res.end(JSON.stringify({ error: 'Not found' }));
+                this.writeJsonResponse(res, 404, { error: 'Not found' });
             }
         } catch (error) {
             console.error('HTTP request error:', error);
-            res.writeHead(500);
-            res.end(JSON.stringify({ error: 'Internal server error' }));
+            this.writeJsonResponse(res, 500, { error: 'Internal server error' });
         }
     }
-    
+
     private async handleMCPRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-        let body = '';
-        
-        req.on('data', (chunk) => {
-            body += chunk.toString();
-        });
-        
-        req.on('end', async () => {
-            try {
-                // MCP 请求使用严格 JSON 解析，避免正则修复造成参数被意外改写
-                const message = this.parseJsonBody(body, {
-                    allowEmpty: false,
-                    routeName: 'MCP'
-                });
-                
-                const response = await this.handleMessage(message);
-                res.writeHead(200);
-                res.end(JSON.stringify(response));
-            } catch (error: any) {
-                console.error('Error handling MCP request:', error);
-                res.writeHead(400);
-                res.end(JSON.stringify({
-                    jsonrpc: '2.0',
-                    id: null,
-                    error: {
-                        code: -32700,
-                        message: `Parse error: ${error.message}`
-                    }
-                }));
-            }
-        });
+        const rawBody = await readRawBody(req);
+        const parseResult = parseJsonRpcBody(rawBody);
+
+        if (!parseResult.ok) {
+            this.writeJsonResponse(res, 400, parseResult.response);
+            return;
+        }
+
+        const contextResult = this.buildMCPRequestContext(parseResult.payload, req);
+        if (!contextResult.ok) {
+            this.writeJsonResponse(res, contextResult.statusCode, { error: contextResult.message });
+            return;
+        }
+
+        const payloadResult = await this.handleIncomingPayload(parseResult.payload, contextResult.context);
+
+        if (payloadResult.sessionIdToReturn) {
+            res.setHeader('MCP-Session-Id', payloadResult.sessionIdToReturn);
+        }
+
+        if (payloadResult.body === undefined) {
+            res.writeHead(payloadResult.statusCode);
+            res.end();
+            return;
+        }
+
+        this.writeJsonResponse(res, payloadResult.statusCode, payloadResult.body);
     }
 
-    private async handleMessage(message: any): Promise<any> {
-        const { id, method, params } = message;
+    private buildMCPRequestContext(
+        payload: unknown,
+        req: http.IncomingMessage
+    ):
+        | { ok: true; context: MCPRequestContext }
+        | { ok: false; statusCode: number; message: string } {
+        const sessionId = this.getSessionIdFromHeader(req);
 
-        try {
-            let result: any;
-
-            switch (method) {
-                case 'tools/list':
-                    result = { tools: this.getAvailableTools() };
-                    break;
-                case 'tools/call':
-                    if (!params || typeof params.name !== 'string' || !params.name) {
-                        throw new Error('Invalid params for tools/call: "name" is required');
-                    }
-                    const name = params.name;
-                    const args = params.arguments ?? {};
-                    const toolResult = await this.executeToolCall(name, args);
-                    result = { content: [{ type: 'text', text: JSON.stringify(toolResult) }] };
-                    break;
-                case 'initialize':
-                    // MCP initialization
-                    result = {
-                        protocolVersion: '2024-11-05',
-                        capabilities: {
-                            tools: {}
-                        },
-                        serverInfo: {
-                            name: 'cocos-mcp-server',
-                            version: '1.0.0'
-                        }
-                    };
-                    break;
-                default:
-                    throw new Error(`Unknown method: ${method}`);
-            }
-
+        if (!this.payloadRequiresSessionHeader(payload)) {
             return {
-                jsonrpc: '2.0',
-                id,
-                result
-            };
-        } catch (error: any) {
-            return {
-                jsonrpc: '2.0',
-                id,
-                error: {
-                    code: -32603,
-                    message: error.message
+                ok: true,
+                context: {
+                    sessionId: null,
+                    session: null
                 }
             };
         }
+
+        if (!sessionId) {
+            return {
+                ok: false,
+                statusCode: 400,
+                message: 'MCP-Session-Id header is required for non-initialize requests.'
+            };
+        }
+
+        const session = this.sessionStore.getSession(sessionId);
+        if (!session) {
+            return {
+                ok: false,
+                statusCode: 400,
+                message: `Invalid MCP-Session-Id: ${sessionId}`
+            };
+        }
+
+        this.sessionStore.touch(sessionId, this.now());
+
+        return {
+            ok: true,
+            context: {
+                sessionId,
+                session
+            }
+        };
+    }
+
+    private payloadRequiresSessionHeader(payload: unknown): boolean {
+        if (Array.isArray(payload)) {
+            return payload.some((item) => {
+                if (!isRecord(item) || typeof item.method !== 'string') {
+                    return false;
+                }
+                return requiresSessionHeader(item.method);
+            });
+        }
+
+        if (!isRecord(payload) || typeof payload.method !== 'string') {
+            return false;
+        }
+
+        return requiresSessionHeader(payload.method);
+    }
+
+    private async handleIncomingPayload(payload: unknown, context: MCPRequestContext): Promise<PayloadHandleResult> {
+        if (Array.isArray(payload)) {
+            if (payload.length === 0) {
+                return {
+                    statusCode: 200,
+                    body: createJsonRpcErrorResponse(
+                        null,
+                        JsonRpcErrorCode.InvalidRequest,
+                        'Invalid Request: batch request cannot be empty'
+                    )
+                };
+            }
+
+            const responses: JsonRpcResponseMessage[] = [];
+            let sessionIdToReturn: string | undefined;
+
+            for (const item of payload) {
+                const result = await this.handleIncomingMessage(item, context, true);
+                if (result.sessionIdToReturn && !sessionIdToReturn) {
+                    sessionIdToReturn = result.sessionIdToReturn;
+                }
+                if (result.response) {
+                    responses.push(result.response);
+                }
+            }
+
+            if (responses.length === 0) {
+                return {
+                    statusCode: 202,
+                    sessionIdToReturn
+                };
+            }
+
+            return {
+                statusCode: 200,
+                body: responses,
+                sessionIdToReturn
+            };
+        }
+
+        const result = await this.handleIncomingMessage(payload, context, false);
+
+        if (!result.response) {
+            return {
+                statusCode: 202,
+                sessionIdToReturn: result.sessionIdToReturn
+            };
+        }
+
+        return {
+            statusCode: 200,
+            body: result.response,
+            sessionIdToReturn: result.sessionIdToReturn
+        };
+    }
+
+    private async handleIncomingMessage(
+        message: unknown,
+        context: MCPRequestContext,
+        isBatch: boolean
+    ): Promise<MessageHandleResult> {
+        // 客户端可能会发送 response 消息（用于响应 server request），当前服务端无主动 request，直接忽略
+        if (isResponseMessage(message)) {
+            return { response: null };
+        }
+
+        if (!isRequestMessage(message) && !isNotificationMessage(message)) {
+            return {
+                response: createJsonRpcErrorResponse(
+                    null,
+                    JsonRpcErrorCode.InvalidRequest,
+                    'Invalid Request: message must be a valid JSON-RPC 2.0 request or notification'
+                )
+            };
+        }
+
+        const method = message.method;
+        const isNotification = isNotificationMessage(message);
+        const requestId = isRequestMessage(message) ? message.id : null;
+
+        if (isInitializeMethod(method)) {
+            if (isBatch) {
+                return {
+                    response: createJsonRpcErrorResponse(
+                        requestId,
+                        JsonRpcErrorCode.InvalidRequest,
+                        'Invalid Request: initialize must be sent as a single request'
+                    )
+                };
+            }
+
+            if (!ensureInitializeIsRequest(message)) {
+                return {
+                    response: createJsonRpcErrorResponse(
+                        null,
+                        JsonRpcErrorCode.InvalidRequest,
+                        'Invalid Request: initialize must be a request with id'
+                    )
+                };
+            }
+
+            if (!isRequestMessage(message)) {
+                return {
+                    response: createJsonRpcErrorResponse(
+                        null,
+                        JsonRpcErrorCode.InvalidRequest,
+                        'Invalid Request: initialize must be a request with id'
+                    )
+                };
+            }
+
+            return this.handleInitializeRequest(message);
+        }
+
+        if (!context.sessionId || !context.session) {
+            return {
+                response: createJsonRpcErrorResponse(
+                    requestId,
+                    JsonRpcErrorCode.InvalidRequest,
+                    'Invalid Request: missing active session for this method'
+                )
+            };
+        }
+
+        if (isInitializedNotification(method)) {
+            if (!isNotification) {
+                return {
+                    response: createJsonRpcErrorResponse(
+                        requestId,
+                        JsonRpcErrorCode.InvalidRequest,
+                        'Invalid Request: notifications/initialized must be a notification without id'
+                    )
+                };
+            }
+
+            this.sessionStore.markReady(context.sessionId, this.now());
+            return { response: null };
+        }
+
+        // 标准 notification：不应返回 JSON-RPC 响应
+        if (isNotification && isNotificationMethod(method)) {
+            return { response: null };
+        }
+
+        if (!isSessionReady(context.session) && !canHandleBeforeReady(method, isNotification)) {
+            return {
+                response: createJsonRpcErrorResponse(
+                    requestId,
+                    JsonRpcErrorCode.InvalidRequest,
+                    'Invalid Request: session is not ready, send notifications/initialized first'
+                )
+            };
+        }
+
+        if (isNotification) {
+            return { response: null };
+        }
+
+        return {
+            response: await this.handleRequestMessage(message)
+        };
+    }
+
+    private handleInitializeRequest(message: JsonRpcRequest): MessageHandleResult {
+        if (message.params !== undefined && !isRecord(message.params)) {
+            return {
+                response: createJsonRpcErrorResponse(
+                    message.id,
+                    JsonRpcErrorCode.InvalidParams,
+                    'Invalid params: initialize params must be an object when provided'
+                )
+            };
+        }
+
+        const sessionId = this.sessionIdGenerator();
+        this.sessionStore.createSession(sessionId, this.now());
+
+        const response: JsonRpcResponseMessage = {
+            jsonrpc: '2.0',
+            id: message.id,
+            result: {
+                protocolVersion: '2025-11-25',
+                capabilities: {
+                    tools: {}
+                },
+                serverInfo: {
+                    name: 'cocos-mcp-server',
+                    version: '1.4.0'
+                }
+            }
+        };
+
+        return {
+            response,
+            sessionIdToReturn: sessionId
+        };
+    }
+
+    private async handleRequestMessage(message: JsonRpcRequest): Promise<JsonRpcResponseMessage> {
+        const { id, method } = message;
+
+        switch (method) {
+            case MCP_METHODS.ToolsList:
+                return {
+                    jsonrpc: '2.0',
+                    id,
+                    result: { tools: this.getAvailableTools() }
+                };
+            case MCP_METHODS.ToolsCall:
+                return this.handleToolsCallRequest(message);
+            case MCP_METHODS.Ping:
+                return {
+                    jsonrpc: '2.0',
+                    id,
+                    result: {}
+                };
+            default:
+                return createJsonRpcErrorResponse(
+                    id,
+                    JsonRpcErrorCode.MethodNotFound,
+                    `Method not found: ${method}`
+                );
+        }
+    }
+
+    private async handleToolsCallRequest(message: JsonRpcRequest): Promise<JsonRpcResponseMessage> {
+        const { id, params } = message;
+
+        if (!isRecord(params)) {
+            return createJsonRpcErrorResponse(
+                id,
+                JsonRpcErrorCode.InvalidParams,
+                'Invalid params for tools/call: params must be an object'
+            );
+        }
+
+        const name = params.name;
+        if (typeof name !== 'string' || !name.trim()) {
+            return createJsonRpcErrorResponse(
+                id,
+                JsonRpcErrorCode.InvalidParams,
+                'Invalid params for tools/call: "name" is required'
+            );
+        }
+
+        const args = params.arguments ?? {};
+
+        try {
+            const toolResult = await this.executeToolCall(name, args);
+            const isBusinessError = this.isToolBusinessError(toolResult);
+
+            return {
+                jsonrpc: '2.0',
+                id,
+                result: {
+                    content: [{ type: 'text', text: this.stringifyToolResult(toolResult) }],
+                    ...(isBusinessError ? { isError: true } : {})
+                }
+            };
+        } catch (error: any) {
+            const messageText = String(error?.message ?? error);
+            if (/not found/i.test(messageText)) {
+                return createJsonRpcErrorResponse(
+                    id,
+                    JsonRpcErrorCode.InvalidParams,
+                    messageText
+                );
+            }
+
+            return createJsonRpcErrorResponse(
+                id,
+                JsonRpcErrorCode.InternalError,
+                messageText
+            );
+        }
+    }
+
+    private isToolBusinessError(toolResult: unknown): boolean {
+        if (!isRecord(toolResult)) {
+            return false;
+        }
+
+        if (toolResult.success === false) {
+            return true;
+        }
+
+        if (typeof toolResult.error === 'string' && toolResult.error.length > 0) {
+            return true;
+        }
+
+        return false;
+    }
+
+    private stringifyToolResult(toolResult: unknown): string {
+        if (typeof toolResult === 'string') {
+            return toolResult;
+        }
+
+        try {
+            const serialized = JSON.stringify(toolResult);
+            if (typeof serialized === 'string') {
+                return serialized;
+            }
+            return String(toolResult);
+        } catch (error) {
+            return String(toolResult);
+        }
+    }
+
+    private handleMCPGet(req: http.IncomingMessage, res: http.ServerResponse): void {
+        const accept = (req.headers.accept || '').toLowerCase();
+        const wantsSse = accept.includes('text/event-stream');
+
+        if (!wantsSse) {
+            this.writeJsonResponse(res, 200, {
+                name: 'cocos-mcp-server',
+                protocolVersion: '2025-11-25',
+                transport: 'streamable-http',
+                endpoint: '/mcp',
+                supports: {
+                    post: true,
+                    sse: true
+                }
+            });
+            return;
+        }
+
+        const sessionId = this.getSessionIdFromHeader(req);
+        if (!sessionId) {
+            this.writeJsonResponse(res, 400, {
+                error: 'MCP-Session-Id header is required for SSE stream.'
+            });
+            return;
+        }
+
+        const session = this.sessionStore.getSession(sessionId);
+        if (!session) {
+            this.writeJsonResponse(res, 400, {
+                error: `Invalid MCP-Session-Id: ${sessionId}`
+            });
+            return;
+        }
+
+        if (!isSessionReady(session)) {
+            this.writeJsonResponse(res, 409, {
+                error: 'Session is not ready. Send notifications/initialized before opening SSE stream.'
+            });
+            return;
+        }
+
+        this.sessionStore.touch(sessionId, this.now());
+        this.streamableHttp.openSseStream(sessionId, req, res);
     }
 
     public stop(): void {
@@ -295,75 +729,68 @@ export class MCPServer {
             console.log('[MCPServer] HTTP server stopped');
         }
 
-        this.clients.clear();
+        this.streamableHttp.dispose();
+        this.sessionStore.clear();
     }
 
     public getStatus(): ServerStatus {
         return {
             running: !!this.httpServer,
             port: this.settings.port,
-            clients: 0 // HTTP is stateless, no persistent clients
+            clients: this.sessionStore.size()
         };
     }
 
     private async handleSimpleAPIRequest(req: http.IncomingMessage, res: http.ServerResponse, pathname: string): Promise<void> {
-        let body = '';
-        
-        req.on('data', (chunk) => {
-            body += chunk.toString();
-        });
-        
-        req.on('end', async () => {
-            try {
-                // Extract tool name from path like /api/node/set_position
-                const pathParts = pathname.split('/').filter(p => p);
-                if (pathParts.length < 3) {
-                    res.writeHead(400);
-                    res.end(JSON.stringify({ error: 'Invalid API path. Use /api/{category}/{tool_name}' }));
-                    return;
-                }
-                
-                const category = pathParts[1];
-                const toolName = pathParts[2];
-                const fullToolName = `${category}_${toolName}`;
-                
-                // Parse parameters with enhanced error handling
-                let params;
-                try {
-                    params = this.parseJsonBody(body, {
-                        allowEmpty: true,
-                        routeName: 'SimpleAPI'
-                    });
-                } catch (parseError: any) {
-                    res.writeHead(400);
-                    res.end(JSON.stringify({
-                        error: 'Invalid JSON in request body',
-                        details: parseError.message,
-                        receivedBody: body.substring(0, 200)
-                    }));
-                    return;
-                }
-                
-                // Execute tool
-                const result = await this.executeToolCall(fullToolName, params);
-                
-                res.writeHead(200);
-                res.end(JSON.stringify({
-                    success: true,
-                    tool: fullToolName,
-                    result: result
-                }));
-                
-            } catch (error: any) {
-                console.error('Simple API error:', error);
-                res.writeHead(500);
-                res.end(JSON.stringify({
-                    success: false,
-                    error: error.message,
-                    tool: pathname
-                }));
+        const body = await readRawBody(req);
+
+        try {
+            // Extract tool name from path like /api/node/set_position
+            const pathParts = pathname.split('/').filter(p => p);
+            if (pathParts.length < 3) {
+                this.writeJsonResponse(res, 400, {
+                    error: 'Invalid API path. Use /api/{category}/{tool_name}'
+                });
+                return;
             }
-        });
+
+            const category = pathParts[1];
+            const toolName = pathParts[2];
+            const fullToolName = `${category}_${toolName}`;
+
+            // Parse parameters with enhanced error handling
+            let params;
+            try {
+                params = this.parseJsonBody(body, {
+                    allowEmpty: true,
+                    routeName: 'SimpleAPI'
+                });
+            } catch (parseError: any) {
+                this.writeJsonResponse(res, 400, {
+                    error: 'Invalid JSON in request body',
+                    details: parseError.message,
+                    receivedBody: body.substring(0, 200)
+                });
+                return;
+            }
+
+            // Execute tool
+            const result = await this.executeToolCall(fullToolName, params);
+
+            this.writeJsonResponse(res, 200, {
+                success: true,
+                tool: fullToolName,
+                result
+            });
+
+        } catch (error: any) {
+            console.error('Simple API error:', error);
+            this.writeJsonResponse(res, 500, {
+                success: false,
+                error: error.message,
+                tool: pathname
+            });
+        }
     }
 
     private getSimplifiedToolsList(): any[] {
@@ -371,11 +798,11 @@ export class MCPServer {
             const parts = tool.name.split('_');
             const category = parts[0];
             const toolName = parts.slice(1).join('_');
-            
+
             return {
                 name: tool.name,
-                category: category,
-                toolName: toolName,
+                category,
+                toolName,
                 description: tool.description,
                 apiPath: `/api/${category}/${toolName}`,
                 curlExample: this.generateCurlExample(category, toolName, tool.inputSchema)
@@ -387,15 +814,13 @@ export class MCPServer {
         // Generate sample parameters based on schema
         const sampleParams = this.generateSampleParams(schema);
         const jsonString = JSON.stringify(sampleParams, null, 2);
-        
-        return `curl -X POST http://127.0.0.1:${this.settings.port}/api/${category}/${toolName} \\
-  -H "Content-Type: application/json" \\
-  -d '${jsonString}'`;
+
+        return `curl -X POST http://127.0.0.1:${this.settings.port}/api/${category}/${toolName} \\\n  -H "Content-Type: application/json" \\\n  -d '${jsonString}'`;
     }
 
     private generateSampleParams(schema: any): any {
         if (!schema || !schema.properties) return {};
-        
+
         const sample: any = {};
         for (const [key, prop] of Object.entries(schema.properties as any)) {
             const propSchema = prop as any;
@@ -442,12 +867,42 @@ export class MCPServer {
         }
     }
 
-    public updateSettings(settings: MCPServerSettings) {
+    public updateSettings(settings: MCPServerSettings): void {
         this.settings = settings;
         if (this.httpServer) {
             this.stop();
-            this.start();
+            void this.start();
         }
+    }
+
+    private getSessionIdFromHeader(req: http.IncomingMessage): string | null {
+        const rawHeader = req.headers['mcp-session-id'];
+        if (!rawHeader) {
+            return null;
+        }
+
+        if (Array.isArray(rawHeader)) {
+            return rawHeader[0] || null;
+        }
+
+        return rawHeader;
+    }
+
+    private isOriginAllowed(req: http.IncomingMessage): boolean {
+        const allowedOrigins = this.settings.allowedOrigins && this.settings.allowedOrigins.length > 0
+            ? this.settings.allowedOrigins
+            : ['*'];
+        const requestOrigin = req.headers.origin;
+
+        if (!requestOrigin) {
+            return true;
+        }
+
+        if (allowedOrigins.includes('*')) {
+            return true;
+        }
+
+        return allowedOrigins.includes(requestOrigin);
     }
 
     private applyCorsHeaders(req: http.IncomingMessage, res: http.ServerResponse): void {
@@ -467,10 +922,15 @@ export class MCPServer {
             return;
         }
 
-        // 在未命中来源时使用首个允许来源，避免返回无效CORS头
+        // 未携带 Origin 时，允许首个白名单来源用于非浏览器客户端
         res.setHeader('Access-Control-Allow-Origin', allowedOrigins[0]);
+    }
+
+    private writeJsonResponse(res: http.ServerResponse, statusCode: number, payload: unknown): void {
+        res.statusCode = statusCode;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify(payload));
     }
 }
 
-// HTTP transport doesn't need persistent connections
-// MCP over HTTP uses request-response pattern
+// HTTP transport doesn't need persistent client socket beyond SSE streams

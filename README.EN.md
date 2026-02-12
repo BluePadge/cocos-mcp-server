@@ -188,6 +188,55 @@ claude mcp add --transport http cocos-creator http://127.0.0.1:3000/mcp (use you
 }
 ```
 
+**Codex CLI (recommended: stdio bridge for better compatibility)**
+
+1. Ensure MCP HTTP server is running in the Cocos Creator extension panel (default `http://127.0.0.1:3000/mcp`).
+2. Build once in the extension directory:
+
+```bash
+npm run build
+```
+
+3. Start Codex with project-session scoped config (no global pollution):
+
+```bash
+codex -C "/your/project/root" \
+  -c 'mcp_servers.cocos_creator.command="node"' \
+  -c 'mcp_servers.cocos_creator.args=["/your/project/root/extensions/cocos-mcp-server/dist/stdio-http-bridge.js","--url","http://127.0.0.1:3000/mcp"]'
+```
+
+If you prefer persistent global config in `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.cocos_creator]
+command = "node"
+args = ["/your/project/root/extensions/cocos-mcp-server/dist/stdio-http-bridge.js", "--url", "http://127.0.0.1:3000/mcp"]
+```
+
+Bridge protocol note: `stdio-http-bridge` now uses standard newline-delimited JSON-RPC (one JSON-RPC message per line) and no longer uses `Content-Length` framing.
+
+## MCP Compliance Notes (2026-02-12)
+
+### Session and lifecycle
+- After `initialize`, the server returns `MCP-Session-Id` in response headers.
+- All `/mcp` requests except `initialize` must include that header; missing/invalid header returns `HTTP 400`.
+- Client should send `notifications/initialized` to move session to `ready`; this notification returns `202` with empty body.
+
+### Error code semantics
+- `-32700`: Parse error (invalid JSON payload)
+- `-32600`: Invalid request (invalid message shape or lifecycle state)
+- `-32601`: Method not found
+- `-32602`: Invalid params (invalid arguments or unknown tool)
+- `-32603`: Internal error
+
+### `tools/call` result mapping
+- Business-level tool failures are returned as `result.isError=true`, with original tool output preserved in `result.content[0].text`.
+- Only protocol-level failures are returned in JSON-RPC `error`.
+
+### Streamable HTTP (SSE)
+- `GET /mcp` with `Accept: text/event-stream` opens an SSE stream.
+- SSE also requires a valid `MCP-Session-Id` and a session already in `ready` state.
+
 ## Features
 
 ### 🎯 Scene Operations (scene_*)
@@ -424,4 +473,3 @@ This plug-in is for Cocos Creator project use, and the source code is packaged t
 
 ## Contact me to join the group
 <img alt="image" src="https://github.com/user-attachments/assets/a276682c-4586-480c-90e5-6db132e89e0f" width="400" height="400" />
-
