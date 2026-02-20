@@ -1026,9 +1026,27 @@ async function testPrefabLifecycleTools(): Promise<void> {
     const resetNodeCalls: any[] = [];
     const resetComponentCalls: any[] = [];
     const createNodeCalls: any[] = [];
+    const removeNodeCalls: any[] = [];
     const applyCalls: any[] = [];
+    const queriedAssetUuids: string[] = [];
+    let createAttempt = 0;
+
+    const prefabNodeStates: Record<string, { state: number; assetUuid: string } | null> = {
+        'node-prefab-1': { state: 1, assetUuid: 'asset-prefab-1' },
+        'node-prefab-2': { state: 1, assetUuid: 'asset-prefab-1' },
+        'node-created-invalid': null,
+        'node-created-from-prefab': { state: 1, assetUuid: 'asset-prefab-1' }
+    };
 
     const requester = async (channel: string, method: string, ...args: any[]): Promise<any> => {
+        if (channel === 'asset-db' && method === 'query-asset-info') {
+            queriedAssetUuids.push(args[0]);
+            return {
+                uuid: args[0],
+                type: 'cc.Prefab'
+            };
+        }
+
         if (channel !== 'scene') {
             throw new Error(`Unexpected channel: ${channel}`);
         }
@@ -1038,14 +1056,26 @@ async function testPrefabLifecycleTools(): Promise<void> {
         }
         if (method === 'create-node') {
             createNodeCalls.push(args[0]);
-            return 'node-created-from-prefab';
+            createAttempt += 1;
+            return createAttempt === 1 ? 'node-created-invalid' : 'node-created-from-prefab';
+        }
+        if (method === 'remove-node') {
+            removeNodeCalls.push(args[0]);
+            return true;
         }
         if (method === 'query-node') {
+            const nodeUuid = args[0];
+            const prefabState = prefabNodeStates[nodeUuid as string];
+            if (!prefabState) {
+                return {
+                    name: { value: 'PlayerRoot' }
+                };
+            }
             return {
                 name: { value: 'PlayerRoot' },
                 prefab: {
-                    state: 1,
-                    assetUuid: { value: 'asset-prefab-1' }
+                    state: prefabState.state,
+                    assetUuid: { value: prefabState.assetUuid }
                 }
             };
         }
@@ -1072,12 +1102,14 @@ async function testPrefabLifecycleTools(): Promise<void> {
     const tools = createOfficialTools(requester);
     const matrix = createMatrix([
         'scene.create-node',
+        'scene.remove-node',
         'scene.query-nodes-by-asset-uuid',
         'scene.query-node',
         'scene.apply-prefab',
         'scene.restore-prefab',
         'scene.reset-node',
-        'scene.reset-component'
+        'scene.reset-component',
+        'asset-db.query-asset-info'
     ]);
     const registry = new NextToolRegistry(tools, matrix);
     const router = new NextMcpRouter(registry);
@@ -1114,7 +1146,11 @@ async function testPrefabLifecycleTools(): Promise<void> {
     assert.ok(createInstance);
     assert.strictEqual(createInstance!.result.isError, false);
     assert.strictEqual(createInstance!.result.structuredContent.data.nodeUuid, 'node-created-from-prefab');
-    assert.strictEqual(createNodeCalls.length, 1);
+    assert.strictEqual(createNodeCalls.length, 2);
+    assert.strictEqual(removeNodeCalls.length, 1);
+    assert.strictEqual(removeNodeCalls[0].uuid, 'node-created-invalid');
+    assert.strictEqual(queriedAssetUuids.length, 1);
+    assert.strictEqual(queriedAssetUuids[0], 'asset-prefab-1');
 
     const queryNodes = await router.handle({
         jsonrpc: '2.0',
@@ -1177,6 +1213,7 @@ async function testPrefabLifecycleTools(): Promise<void> {
     assert.strictEqual(applyBatch!.result.isError, false);
     assert.strictEqual(applyBatch!.result.structuredContent.data.successCount, 2);
     assert.strictEqual(applyCalls.length, 3);
+    assert.strictEqual(typeof applyCalls[0], 'string');
 
     const restoreSingle = await router.handle({
         jsonrpc: '2.0',
@@ -1236,7 +1273,9 @@ async function testPrefabLifecycleTools(): Promise<void> {
     assert.ok(resetComponent);
     assert.strictEqual(resetComponent!.result.isError, false);
     assert.strictEqual(resetComponentCalls.length, 1);
-    assert.strictEqual(restoreCalls.length, 3);
+    assert.ok(restoreCalls.length >= 3);
+    assert.ok(restoreCalls.includes('node-prefab-1'));
+    assert.ok(restoreCalls.includes('node-prefab-2'));
 }
 
 async function testUnknownTool(): Promise<void> {

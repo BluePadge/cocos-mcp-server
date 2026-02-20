@@ -18,7 +18,301 @@ function readPrefabState(prefab: any): number | null {
 }
 
 function readPrefabAssetUuid(prefab: any): string | null {
-    return readDumpString(prefab?.assetUuid) || null;
+    const direct = readDumpString(prefab?.assetUuid)
+        || readDumpString(prefab?.prefabUuid)
+        || readDumpString(prefab?.uuid)
+        || readDumpString(prefab?.__uuid__);
+    if (direct) {
+        return direct;
+    }
+
+    const nestedAsset = prefab?.asset;
+    const nested = readDumpString(nestedAsset?.uuid)
+        || readDumpString(nestedAsset?.__uuid__)
+        || readDumpString(nestedAsset?.assetUuid)
+        || readDumpString(unwrapValue(nestedAsset));
+    return nested || null;
+}
+
+function resolveNodeUuid(result: any): string | null {
+    if (typeof result === 'string' && result.trim() !== '') {
+        return result.trim();
+    }
+
+    if (Array.isArray(result) && typeof result[0] === 'string' && result[0].trim() !== '') {
+        return result[0].trim();
+    }
+
+    if (result && typeof result === 'object') {
+        const direct = readDumpString(result.uuid)
+            || readDumpString(result.nodeUuid)
+            || readDumpString(result.id)
+            || readDumpString(result.value);
+        if (direct) {
+            return direct;
+        }
+
+        const nested = readDumpString(result.node?.uuid)
+            || readDumpString(result.node?.nodeUuid);
+        if (nested) {
+            return nested;
+        }
+    }
+
+    return null;
+}
+
+function readPrefabContainer(node: any): any {
+    if (!node || typeof node !== 'object') {
+        return null;
+    }
+
+    return node.prefab
+        || node._prefabInstance
+        || node.__prefab__
+        || node._prefab
+        || null;
+}
+
+interface PrefabInstanceInfo {
+    nodeUuid: string;
+    nodeName: string | null;
+    isPrefabInstance: boolean;
+    prefabState: number | null;
+    prefabAssetUuid: string | null;
+    prefab: any;
+    node: any;
+}
+
+async function queryPrefabInstanceInfo(requester: EditorRequester, nodeUuid: string): Promise<PrefabInstanceInfo> {
+    const node = await requester('scene', 'query-node', nodeUuid);
+    const prefab = readPrefabContainer(node);
+    const prefabAssetUuid = readPrefabAssetUuid(prefab);
+    const prefabState = readPrefabState(prefab);
+    const hasPrefabSignal = Boolean(prefab)
+        || Object.prototype.hasOwnProperty.call(node || {}, 'prefab')
+        || Object.prototype.hasOwnProperty.call(node || {}, '_prefabInstance')
+        || Object.prototype.hasOwnProperty.call(node || {}, '__prefab__')
+        || Object.prototype.hasOwnProperty.call(node || {}, '_prefab');
+    const isPrefabInstance = Boolean(prefabAssetUuid)
+        || (typeof prefabState === 'number' && prefabState > 0)
+        || hasPrefabSignal;
+
+    return {
+        nodeUuid,
+        nodeName: readNodeName(node),
+        isPrefabInstance,
+        prefabState,
+        prefabAssetUuid,
+        prefab,
+        node
+    };
+}
+
+function buildCreateNodeCandidates(baseOptions: Record<string, any>, assetType: string | null): Array<Record<string, any>> {
+    const candidates: Array<Record<string, any>> = [];
+    const seen = new Set<string>();
+
+    const tryAdd = (candidate: Record<string, any>): void => {
+        const key = JSON.stringify(candidate);
+        if (!seen.has(key)) {
+            seen.add(key);
+            candidates.push(candidate);
+        }
+    };
+
+    tryAdd({ ...baseOptions });
+
+    if (assetType) {
+        tryAdd({ ...baseOptions, type: assetType });
+    }
+
+    const rawAssetUuid = baseOptions.assetUuid;
+    if (typeof rawAssetUuid === 'string' && rawAssetUuid.trim() !== '') {
+        const wrappedValue: Record<string, any> = { value: rawAssetUuid };
+        if (assetType) {
+            wrappedValue.type = assetType;
+        }
+        tryAdd({ ...baseOptions, assetUuid: wrappedValue });
+
+        const wrappedUuid: Record<string, any> = { uuid: rawAssetUuid };
+        if (assetType) {
+            wrappedUuid.type = assetType;
+        }
+        tryAdd({ ...baseOptions, assetUuid: wrappedUuid });
+    }
+
+    return candidates;
+}
+
+async function removeNodeQuietly(requester: EditorRequester, nodeUuid: string): Promise<string | null> {
+    try {
+        await requester('scene', 'remove-node', { uuid: nodeUuid });
+        return null;
+    } catch (error: any) {
+        return normalizeError(error);
+    }
+}
+
+interface CreateVerifiedPrefabResult {
+    nodeUuid: string;
+    options: Record<string, any>;
+    verification: PrefabInstanceInfo;
+    attempts: Array<{
+        index: number;
+        options: Record<string, any>;
+        nodeUuid?: string;
+        verified: boolean;
+        detail: string;
+        cleanupError?: string | null;
+    }>;
+}
+
+interface PrefabLinkAttemptResult {
+    linked: boolean;
+    method: string | null;
+    verification?: PrefabInstanceInfo;
+    errors: string[];
+}
+
+async function tryLinkPrefabToNode(
+    requester: EditorRequester,
+    nodeUuid: string,
+    expectedAssetUuid: string
+): Promise<PrefabLinkAttemptResult> {
+    const attempts: Array<{ method: string; args: any[]; label: string }> = [
+        {
+            method: 'link-prefab',
+            args: [nodeUuid, expectedAssetUuid],
+            label: 'link-prefab(nodeUuid, assetUuid)'
+        },
+        {
+            method: 'link-prefab',
+            args: [{ uuid: nodeUuid, assetUuid: expectedAssetUuid }],
+            label: 'link-prefab({uuid,assetUuid})'
+        },
+        {
+            method: 'link-prefab',
+            args: [{ node: nodeUuid, prefab: expectedAssetUuid }],
+            label: 'link-prefab({node,prefab})'
+        },
+        {
+            method: 'restore-prefab',
+            args: [{ uuid: nodeUuid, assetUuid: expectedAssetUuid }],
+            label: 'restore-prefab({uuid,assetUuid})'
+        }
+    ];
+
+    const errors: string[] = [];
+    for (const attempt of attempts) {
+        try {
+            await requester('scene', attempt.method, ...attempt.args);
+            const verification = await queryPrefabInstanceInfo(requester, nodeUuid);
+            const assetMatched = !verification.prefabAssetUuid || verification.prefabAssetUuid === expectedAssetUuid;
+            if (verification.isPrefabInstance && assetMatched) {
+                return {
+                    linked: true,
+                    method: `${attempt.method}:${attempt.label}`,
+                    verification,
+                    errors
+                };
+            }
+            errors.push(
+                `${attempt.label} => 已调用但未建立关联（prefabAssetUuid=${verification.prefabAssetUuid || 'null'}）`
+            );
+        } catch (error: any) {
+            errors.push(`${attempt.label} => ${normalizeError(error)}`);
+        }
+    }
+
+    return {
+        linked: false,
+        method: null,
+        errors
+    };
+}
+
+async function createVerifiedPrefabInstance(
+    requester: EditorRequester,
+    baseOptions: Record<string, any>,
+    expectedAssetUuid: string,
+    assetType: string | null
+): Promise<CreateVerifiedPrefabResult> {
+    const attempts: CreateVerifiedPrefabResult['attempts'] = [];
+    const candidates = buildCreateNodeCandidates(baseOptions, assetType);
+
+    for (let index = 0; index < candidates.length; index += 1) {
+        const candidate = candidates[index];
+        try {
+            const created = await requester('scene', 'create-node', candidate);
+            const nodeUuid = resolveNodeUuid(created);
+            if (!nodeUuid) {
+                attempts.push({
+                    index: index + 1,
+                    options: candidate,
+                    verified: false,
+                    detail: 'create-node 未返回有效节点 UUID'
+                });
+                continue;
+            }
+
+            const verification = await queryPrefabInstanceInfo(requester, nodeUuid);
+            const assetMatched = !verification.prefabAssetUuid || verification.prefabAssetUuid === expectedAssetUuid;
+            if (verification.isPrefabInstance && assetMatched) {
+                attempts.push({
+                    index: index + 1,
+                    options: candidate,
+                    nodeUuid,
+                    verified: true,
+                    detail: '已验证为 Prefab 实例'
+                });
+                return {
+                    nodeUuid,
+                    options: candidate,
+                    verification,
+                    attempts
+                };
+            }
+
+            const linked = await tryLinkPrefabToNode(requester, nodeUuid, expectedAssetUuid);
+            if (linked.linked && linked.verification) {
+                attempts.push({
+                    index: index + 1,
+                    options: candidate,
+                    nodeUuid,
+                    verified: true,
+                    detail: `创建后经 ${linked.method} 建立 Prefab 关联`
+                });
+                return {
+                    nodeUuid,
+                    options: candidate,
+                    verification: linked.verification,
+                    attempts
+                };
+            }
+
+            const cleanupError = await removeNodeQuietly(requester, nodeUuid);
+            attempts.push({
+                index: index + 1,
+                options: candidate,
+                nodeUuid,
+                verified: false,
+                detail: `节点未建立 Prefab 关联（prefabAssetUuid=${verification.prefabAssetUuid || 'null'}）`
+                    + (linked.errors.length > 0 ? `；链接回填失败：${linked.errors.join('; ')}` : ''),
+                cleanupError
+            });
+        } catch (error: any) {
+            attempts.push({
+                index: index + 1,
+                options: candidate,
+                verified: false,
+                detail: normalizeError(error)
+            });
+        }
+    }
+
+    const summary = attempts.map((item) => `#${item.index} ${item.detail}`).join(' | ');
+    throw new Error(summary || '所有 create-node 方案都未成功建立 Prefab 关联');
 }
 
 function normalizePrefabCreateOptions(args: any): Record<string, any> {
@@ -56,24 +350,41 @@ function normalizePrefabCreateOptions(args: any): Record<string, any> {
 async function applyPrefabToNode(
     requester: EditorRequester,
     nodeUuid: string,
-    prefabUuid: string | null
+    prefabAssetUuid: string | null
 ): Promise<{ method: string }> {
-    const payload = prefabUuid
-        ? { node: nodeUuid, prefab: prefabUuid }
-        : { uuid: nodeUuid };
+    const attempts: Array<{ method: string; args: any[]; label: string }> = [
+        { method: 'apply-prefab', args: [nodeUuid], label: 'apply-prefab(string)' },
+        { method: 'apply-prefab', args: [{ uuid: nodeUuid }], label: 'apply-prefab({uuid})' }
+    ];
 
-    try {
-        await requester('scene', 'apply-prefab', payload);
-        return { method: 'apply-prefab' };
-    } catch (primaryError: any) {
+    if (prefabAssetUuid) {
+        attempts.push({
+            method: 'apply-prefab',
+            args: [{ node: nodeUuid, prefab: prefabAssetUuid }],
+            label: 'apply-prefab({node,prefab})'
+        });
+    }
+
+    attempts.push({ method: 'apply-prefab-link', args: [{ uuid: nodeUuid }], label: 'apply-prefab-link({uuid})' });
+    if (prefabAssetUuid) {
+        attempts.push({
+            method: 'apply-prefab-link',
+            args: [{ node: nodeUuid, prefab: prefabAssetUuid }],
+            label: 'apply-prefab-link({node,prefab})'
+        });
+    }
+
+    const errors: string[] = [];
+    for (const attempt of attempts) {
         try {
-            await requester('scene', 'apply-prefab-link', payload);
-            return { method: 'apply-prefab-link' };
-        } catch (fallbackError: any) {
-            const detail = `${normalizeError(primaryError)}; fallback failed: ${normalizeError(fallbackError)}`;
-            throw new Error(detail);
+            await requester('scene', attempt.method, ...attempt.args);
+            return { method: `${attempt.method}:${attempt.label}` };
+        } catch (error: any) {
+            errors.push(`${attempt.label} => ${normalizeError(error)}`);
         }
     }
+
+    throw new Error(errors.join('; '));
 }
 
 export function createPrefabLifecycleTools(requester: EditorRequester): NextToolDefinition[] {
@@ -103,7 +414,7 @@ export function createPrefabLifecycleTools(requester: EditorRequester): NextTool
                 },
                 required: ['assetUuid']
             },
-            requiredCapabilities: ['scene.create-node'],
+            requiredCapabilities: ['scene.create-node', 'scene.query-node', 'asset-db.query-asset-info'],
             run: async (args: any) => {
                 const options = normalizePrefabCreateOptions(args);
                 if (!options.assetUuid) {
@@ -111,14 +422,26 @@ export function createPrefabLifecycleTools(requester: EditorRequester): NextTool
                 }
 
                 try {
-                    const nodeUuid = await requester('scene', 'create-node', options);
+                    let assetType: string | null = null;
+                    try {
+                        const assetInfo = await requester('asset-db', 'query-asset-info', options.assetUuid);
+                        assetType = toNonEmptyString(assetInfo?.type);
+                    } catch {
+                        assetType = null;
+                    }
+
+                    const created = await createVerifiedPrefabInstance(requester, options, options.assetUuid, assetType);
                     return ok({
                         created: true,
-                        nodeUuid,
-                        options
+                        verified: true,
+                        nodeUuid: created.nodeUuid,
+                        options: created.options,
+                        prefabAssetUuid: created.verification.prefabAssetUuid,
+                        prefabState: created.verification.prefabState,
+                        attempts: created.attempts
                     });
                 } catch (error: any) {
-                    return fail('创建 Prefab 实例失败', normalizeError(error));
+                    return fail('创建 Prefab 实例失败（未建立有效 Prefab 关联）', normalizeError(error), 'E_PREFAB_CREATE_NOT_LINKED');
                 }
             }
         },
@@ -174,18 +497,9 @@ export function createPrefabLifecycleTools(requester: EditorRequester): NextTool
                 }
 
                 try {
-                    const node = await requester('scene', 'query-node', nodeUuid);
-                    const prefab = node?.prefab || null;
-                    const prefabAssetUuid = readPrefabAssetUuid(prefab);
-                    const prefabState = readPrefabState(prefab);
-                    const isPrefabInstance = Boolean(prefabAssetUuid) || (typeof prefabState === 'number' && prefabState > 0);
+                    const info = await queryPrefabInstanceInfo(requester, nodeUuid);
                     return ok({
-                        nodeUuid,
-                        nodeName: readNodeName(node),
-                        isPrefabInstance,
-                        prefabState,
-                        prefabAssetUuid,
-                        prefab
+                        ...info
                     });
                 } catch (error: any) {
                     return fail('查询 Prefab 实例信息失败', normalizeError(error));
@@ -194,18 +508,18 @@ export function createPrefabLifecycleTools(requester: EditorRequester): NextTool
         },
         {
             name: 'prefab_apply_instance',
-            description: '将节点应用/关联到指定 Prefab（实验能力）',
+            description: '将 Prefab 实例节点的改动应用回关联资源（实验能力）',
             layer: 'experimental',
             category: 'prefab',
             inputSchema: {
                 type: 'object',
                 properties: {
                     nodeUuid: { type: 'string', description: '目标节点 UUID' },
-                    prefabUuid: { type: 'string', description: '可选，目标 Prefab 资源 UUID；不传则按节点当前关联处理' }
+                    prefabUuid: { type: 'string', description: '可选，仅用于校验当前关联资源 UUID 是否一致' }
                 },
                 required: ['nodeUuid']
             },
-            requiredCapabilities: ['scene.apply-prefab'],
+            requiredCapabilities: ['scene.apply-prefab', 'scene.query-node'],
             run: async (args: any) => {
                 const nodeUuid = toNonEmptyString(args?.nodeUuid);
                 const prefabUuid = toNonEmptyString(args?.prefabUuid);
@@ -214,12 +528,28 @@ export function createPrefabLifecycleTools(requester: EditorRequester): NextTool
                 }
 
                 try {
-                    const applied = await applyPrefabToNode(requester, nodeUuid, prefabUuid);
+                    const before = await queryPrefabInstanceInfo(requester, nodeUuid);
+                    if (!before.isPrefabInstance) {
+                        return fail('目标节点当前不是 Prefab 实例，无法 apply', undefined, 'E_PREFAB_INSTANCE_REQUIRED');
+                    }
+
+                    if (prefabUuid && before.prefabAssetUuid && before.prefabAssetUuid !== prefabUuid) {
+                        return fail('prefabUuid 与节点当前关联资源不一致，官方 API 不支持跨 Prefab 直接关联', undefined, 'E_INVALID_ARGUMENT');
+                    }
+
+                    const applied = await applyPrefabToNode(requester, nodeUuid, before.prefabAssetUuid || prefabUuid);
+                    const after = await queryPrefabInstanceInfo(requester, nodeUuid);
+                    if (!after.isPrefabInstance) {
+                        return fail('apply 返回成功但节点未保持 Prefab 实例状态', undefined, 'E_PREFAB_APPLY_VERIFY_FAILED');
+                    }
+
                     return ok({
                         applied: true,
                         nodeUuid,
-                        prefabUuid,
-                        method: applied.method
+                        prefabUuid: before.prefabAssetUuid || prefabUuid || null,
+                        method: applied.method,
+                        before,
+                        after
                     });
                 } catch (error: any) {
                     return fail('应用 Prefab 失败', normalizeError(error));
@@ -235,16 +565,19 @@ export function createPrefabLifecycleTools(requester: EditorRequester): NextTool
                 type: 'object',
                 properties: {
                     assetUuid: { type: 'string', description: '用于筛选实例节点的 Prefab 资源 UUID' },
-                    targetPrefabUuid: { type: 'string', description: '可选，批量应用时的目标 Prefab UUID；默认使用 assetUuid' }
+                    targetPrefabUuid: { type: 'string', description: '可选，仅用于校验，若传入必须等于 assetUuid' }
                 },
                 required: ['assetUuid']
             },
-            requiredCapabilities: ['scene.query-nodes-by-asset-uuid', 'scene.apply-prefab'],
+            requiredCapabilities: ['scene.query-nodes-by-asset-uuid', 'scene.apply-prefab', 'scene.query-node'],
             run: async (args: any) => {
                 const assetUuid = toNonEmptyString(args?.assetUuid);
                 const targetPrefabUuid = toNonEmptyString(args?.targetPrefabUuid) || assetUuid;
                 if (!assetUuid) {
                     return fail('assetUuid 必填', undefined, 'E_INVALID_ARGUMENT');
+                }
+                if (targetPrefabUuid !== assetUuid) {
+                    return fail('官方 API 不支持按 targetPrefabUuid 跨资源批量关联，targetPrefabUuid 必须等于 assetUuid', undefined, 'E_INVALID_ARGUMENT');
                 }
 
                 try {
@@ -255,7 +588,27 @@ export function createPrefabLifecycleTools(requester: EditorRequester): NextTool
 
                     for (const nodeUuid of nodeUuids) {
                         try {
+                            const before = await queryPrefabInstanceInfo(requester, nodeUuid);
+                            if (!before.isPrefabInstance) {
+                                failed.push({ nodeUuid, error: '节点不是 Prefab 实例，跳过 apply' });
+                                continue;
+                            }
+
+                            if (before.prefabAssetUuid && before.prefabAssetUuid !== assetUuid) {
+                                failed.push({
+                                    nodeUuid,
+                                    error: `节点关联资源与筛选资源不一致（expected=${assetUuid}, actual=${before.prefabAssetUuid}）`
+                                });
+                                continue;
+                            }
+
                             const result = await applyPrefabToNode(requester, nodeUuid, targetPrefabUuid);
+                            const after = await queryPrefabInstanceInfo(requester, nodeUuid);
+                            if (!after.isPrefabInstance) {
+                                failed.push({ nodeUuid, error: 'apply 后节点失去 Prefab 实例状态' });
+                                continue;
+                            }
+
                             applied.push({ nodeUuid, method: result.method });
                         } catch (error: any) {
                             failed.push({ nodeUuid, error: normalizeError(error) });

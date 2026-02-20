@@ -6,7 +6,7 @@
 ## 当前任务文档
 `workflow/260212-mcp-v2-spec-patch.md` - 将调用方 v1 Draft 重写为 MCP-first 的 V2 可实施规格补丁
 `workflow/260212-mcp-v2-implementation.md` - 按 V2 规格进入代码重构实施（协议层、manifest、workflow、测试）
-`workflow/260220-coplay-cocos-mcp-rebuild.md` - 按 coplay 能力目标重写 Cocos MCP（新实现），已推进至运行控制与测试闭环（阶段 15）能力域迁移
+`workflow/260220-coplay-cocos-mcp-rebuild.md` - 按 coplay 能力目标重写 Cocos MCP（新实现），已推进至 Prefab 调用专项修复（阶段 16）
 
 ## 已完成任务文档
 `workflow/done/260212-mcp-spec-compliance-without-tool-logic-change.md` - 在不改工具业务逻辑前提下完成 MCP 协议规范化改造
@@ -31,6 +31,7 @@
 - Next 阶段 13 已新增 UI 自动化工具域（`ui_create_element`/`ui_set_rect_transform`/`ui_set_text`/`ui_set_layout`），用于对齐 coplay 的 UI workflow 能力。
 - Next 阶段 14 已新增调试与诊断工具域（`diagnostic_*`），覆盖编译状态、项目日志、program/programming 信息查询；`scene.query-performance` 不可用时按能力门控隐藏性能快照工具。
 - Next 阶段 15 已新增运行控制与测试闭环工具域（`runtime_*`），覆盖就绪等待、构建面板打开、软重载、快照、场景脚本执行与单次闭环测试。
+- Next 阶段 16 已完成 Prefab 调用专项修复：`prefab_create_instance` 新增“创建后强校验 + link/restore 回填 + 失败自动清理”，`prefab_apply_instance` 改为仅允许对已关联实例 apply，修复 3.8.8 的“假成功”问题。
 - `source/mcp-server.ts` 已切换为 Next runtime 主入口：`tools/list` / `tools/call` / `get_tool_manifest` / `get_trace_by_id` 均由 Next router 处理（不再走 legacy `V2ToolService`）。
 - MCP 端到端测试已统一为 `nextRuntimeFactory` 注入模式，用于在 Node 环境稳定验证 Next-only 协议链路。
 - 能力探测已处理写探测副作用：`scene.create-node` probe 在成功后会自动回滚删除探测节点，避免污染当前场景。
@@ -39,5 +40,5 @@
 - HelloWorld 在线实测中，Next 工具可见数已从 `17` 提升到 `75`，新增域工具可正常调用（含 `scene_view_*`、`ui_*`、`diagnostic_*` 与 `runtime_*` 能力域）。
 - 工具元信息写操作识别已改为按工具名 token 精确匹配，避免 `settings` 等字段命中 `set` 子串导致 `_meta.safety/idempotent` 误判。
 - 已新增重启脚本 `scripts/restart-cocos-project.sh`，采用 `health(tools>0) + MCP 握手` 双重就绪判定，规避“服务早返回但未可用”的启动误判。
-- Prefab 已知问题：`prefab_apply_instance` 在 3.8.8 实测存在“返回成功但实例关联未建立”的情况（`prefab_get_instance_info` 仍显示非实例），已记录待后续专项修复。
+- HelloWorld 在线实测（3.8.8）中，`prefab_create_instance -> prefab_get_instance_info -> prefab_apply_instance -> prefab_query_nodes_by_asset_uuid` 链路已可闭环通过；`prefab_create_instance` 会在需要时自动调用 `link-prefab` 建立实例关联。
 - 本地自动化联调统一采用“按 `--project` 精确匹配 PID 关闭并重启实例 + MCP 三步握手（`initialize` -> `notifications/initialized` -> `tools/list/tools/call`）”流程；避免使用 `CocosCreator --help`（会拉起新实例）。

@@ -27,6 +27,7 @@
 - [x] 阶段 13：UI 自动化能力域迁移（create/set-rect/set-text/set-layout）
 - [x] 阶段 14：调试与诊断能力域迁移（编译状态/日志/插件信息/性能快照）
 - [x] 阶段 15：运行控制与测试闭环能力域迁移（就绪等待/脚本执行/软重载/快照）
+- [x] 阶段 16：Prefab 调用专项修复（去除假成功 + 3.8.8 在线回归）
 
 ## TODO
 - [x] 产出 `backend/coplay-cocos-capability-map.md`
@@ -75,6 +76,10 @@
 - [x] 新增独立测试 `next-runtime-control-tools-test` 并接入 `test:mcp`
 - [x] 新增脚本 `scripts/restart-cocos-project.sh`，修复实例重启后“tools=0 误判就绪”问题
 - [x] 在线冒烟验证运行控制与测试闭环工具可见性与调用
+- [x] Prefab 专项修复：`prefab_create_instance` 增加“创建后强校验 + 自动清理 + 链接回填”流程
+- [x] Prefab 专项修复：`prefab_apply_instance` 改为“仅允许对已关联实例 apply”，避免非实例假成功
+- [x] 扩展 `next-router-test` 以覆盖 Prefab 新行为（多候选创建、`remove-node` 清理、`asset-db.query-asset-info`）
+- [x] HelloWorld 在线回归：`prefab_create_instance -> prefab_get_instance_info -> prefab_apply_instance -> prefab_query_nodes_by_asset_uuid`
 - [x] `npm run build`
 - [x] `npm run test:mcp`
 
@@ -161,6 +166,12 @@
   - 执行与闭环：`runtime_soft_reload_scene`、`runtime_take_scene_snapshot`、`runtime_abort_scene_snapshot`、`runtime_execute_scene_script`、`runtime_execute_test_cycle`
   - 闭环工具支持“等待就绪 -> 可选脚本 -> 状态回读”单次测试流程，适配自动化迭代调试
   - 启动脚本：新增 `scripts/restart-cocos-project.sh`，内置 `health(tools>0) + MCP 握手` 双重就绪判定
+- 阶段 16 新增覆盖点：
+  - `prefab_create_instance` 增加创建后强校验：若未形成实例关联则自动回滚候选节点，并返回 `E_PREFAB_CREATE_NOT_LINKED`
+  - 在 3.8.8 下新增链接回填策略：尝试 `link-prefab`（多参数形态）与 `restore-prefab({uuid,assetUuid})`，成功后再返回实例
+  - `prefab_apply_instance` 增加前置校验：非 Prefab 实例直接返回 `E_PREFAB_INSTANCE_REQUIRED`，避免历史“假成功”
+  - `prefab_apply_instances_by_asset` 限制 `targetPrefabUuid === assetUuid`，避免误导性“跨资源关联”语义
+  - `resolveNodeUuid` 增强：兼容 `create-node` 的对象返回形态（`uuid/nodeUuid/id/value`）
 - 主入口挂接结果：
   - `source/mcp-server.ts` 已不再依赖 `V2ToolService` 处理工具请求，改为 Next router 统一分发
   - `source/mcp-server.ts` 通过 `nextRuntimeFactory` 支持测试注入与生产默认 runtime
@@ -194,9 +205,13 @@
   - 重启后 `GET /health` 显示工具数 `75`
   - `tools/list` 可见 `runtime_*` 工具 `8` 个
   - 在线调用通过：`runtime_query_control_state`、`runtime_execute_test_cycle`
-- 已知问题（待后续修复）：
-  - 在 HelloWorld + Cocos 3.8.8 实测中，`prefab_apply_instance` 返回成功后，`prefab_get_instance_info` 仍可能显示 `isPrefabInstance=false/prefabAssetUuid=null`
-  - 同步观测 `prefab_query_nodes_by_asset_uuid` 未包含新建实例，疑似 `apply-prefab` 调用成功但未建立实例关联，需后续针对 Prefab API 语义做专项修复
+- 在线验证补充（Prefab 专项修复批次）：
+  - 重启后 `GET /health` 显示工具数 `75`，Prefab 工具可见
+  - `prefab_create_instance` 对 `Empty.prefab(2e3822ac-c1f1-4a95-aaa5-2e0c116ca056)` 在线创建成功，并返回 `verified=true`
+  - `prefab_create_instance` 回包显示通过 `link-prefab(nodeUuid, assetUuid)` 建立实例关联
+  - 回读校验通过：`prefab_get_instance_info.isPrefabInstance=true`，`prefabAssetUuid=2e3822ac-c1f1-4a95-aaa5-2e0c116ca056`
+  - 查询校验通过：`prefab_query_nodes_by_asset_uuid.count=1` 且包含新建节点 UUID
+  - `prefab_apply_instance` 在线调用成功并保持实例状态；之后已用 `scene_delete_game_object` 清理测试节点
 - 验证结果：
   - `npm run build` 通过
   - `npm run test:mcp` 通过（含新增 next 测试）
