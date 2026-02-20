@@ -228,10 +228,11 @@ Bridge protocol note: `stdio-http-bridge` now uses standard newline-delimited JS
 - Client should send `notifications/initialized` to move session to `ready`; this notification returns `202` with empty body.
 
 ### Methods and metadata
-- `tools/list`: returns V2 tool list with `_meta` (`layer/category/safety/idempotent/supportsDryRun`).
+- `tools/list`: returns the Next tool list with `_meta` (`layer/category/safety/idempotent/supportsDryRun`), gated by capability matrix visibility.
 - `tools/call`: returns normalized `structuredContent` plus text `content`.
-- `get_tool_manifest`: fetches full manifest for one tool (`inputSchema/outputSchema/examples`).
+- `get_tool_manifest`: fetches a tool manifest (`inputSchema/outputSchema/requiredCapabilities`).
 - `get_trace_by_id`: fetches recent call trace details by `traceId`.
+- `get_capability_matrix`: returns the current Editor capability matrix (official/extended/experimental).
 
 ### Error semantics
 - Protocol errors use JSON-RPC `error`: `-32700/-32600/-32601/-32602/-32603`.

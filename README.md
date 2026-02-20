@@ -227,10 +227,11 @@ args = ["/你的项目根目录/extensions/cocos-mcp-server/dist/stdio-http-brid
 - 客户端需发送 `notifications/initialized` 将会话切换到 `ready`；该通知返回 `202` 且无响应体。
 
 ### 方法与元数据
-- `tools/list`：返回 V2 工具清单，每个工具带 `_meta`（`layer/category/safety/idempotent/supportsDryRun`）。
+- `tools/list`：返回 Next 工具清单，每个工具带 `_meta`（`layer/category/safety/idempotent/supportsDryRun`），工具可见性由能力矩阵门控。
 - `tools/call`：返回 `structuredContent`（统一成功/失败结构）与 `content` 文本摘要。
-- `get_tool_manifest`：查询单工具完整 manifest（含 `inputSchema/outputSchema/examples`）。
+- `get_tool_manifest`：查询单工具 manifest（含 `inputSchema/outputSchema/requiredCapabilities`）。
 - `get_trace_by_id`：按 `traceId` 查询最近调用记录。
+- `get_capability_matrix`：查询当前 Editor 能力矩阵（official/extended/experimental）。
 
 ### 错误语义
 - 协议错误使用 JSON-RPC `error`：`-32700/-32600/-32601/-32602/-32603`。

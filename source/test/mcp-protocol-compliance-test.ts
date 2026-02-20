@@ -2,48 +2,58 @@ import * as assert from 'assert';
 import * as http from 'http';
 import { AddressInfo } from 'net';
 import { MCPServer } from '../mcp-server';
-import { MCPServerSettings, ToolDefinition } from '../types';
-
-class MockTools {
-    public getTools(): ToolDefinition[] {
-        return [
-            {
-                name: 'echo',
-                description: 'Echo args for test',
-                inputSchema: {
-                    type: 'object',
-                    properties: {
-                        fail: { type: 'boolean' },
-                        value: { type: 'string' }
-                    }
-                }
-            }
-        ];
-    }
-
-    public async execute(toolName: string, args: any): Promise<any> {
-        if (toolName !== 'echo') {
-            throw new Error(`Tool mock_${toolName} not found`);
-        }
-
-        if (args && args.fail) {
-            return {
-                success: false,
-                error: 'mock failure'
-            };
-        }
-
-        return {
-            success: true,
-            data: args
-        };
-    }
-}
+import { MCPServerSettings } from '../types';
+import { CapabilityMatrix } from '../next/models';
+import { createOfficialTools } from '../next/tools/official-tools';
+import { NextToolRegistry } from '../next/protocol/tool-registry';
+import { NextMcpRouter } from '../next/protocol/router';
 
 interface HttpResult {
     statusCode: number;
     headers: http.IncomingHttpHeaders;
     body: string;
+}
+
+function createMatrix(availableKeys: string[]): CapabilityMatrix {
+    const byKey: CapabilityMatrix['byKey'] = {};
+    for (const key of availableKeys) {
+        const firstDot = key.indexOf('.');
+        byKey[key] = {
+            key,
+            channel: key.slice(0, firstDot),
+            method: key.slice(firstDot + 1),
+            layer: 'official',
+            readonly: true,
+            description: key,
+            available: true,
+            checkedAt: new Date().toISOString(),
+            detail: 'ok'
+        };
+    }
+
+    return {
+        generatedAt: new Date().toISOString(),
+        byKey,
+        summary: {
+            total: availableKeys.length,
+            available: availableKeys.length,
+            unavailable: 0,
+            byLayer: {
+                official: {
+                    total: availableKeys.length,
+                    available: availableKeys.length
+                },
+                extended: {
+                    total: 0,
+                    available: 0
+                },
+                experimental: {
+                    total: 0,
+                    available: 0
+                }
+            }
+        }
+    };
 }
 
 function postRaw(port: number, body: string, sessionId?: string): Promise<HttpResult> {
@@ -138,11 +148,32 @@ async function main(): Promise<void> {
         maxConnections: 10
     };
 
+    const requester = async (channel: string, method: string, ...args: any[]): Promise<any> => {
+        if (channel === 'asset-db' && method === 'query-assets') {
+            return [{ uuid: 'asset-1', url: 'db://assets/a.prefab' }];
+        }
+        if (channel === 'asset-db' && method === 'query-asset-info') {
+            const query = args[0];
+            if (query === 'bad://missing') {
+                throw new Error('mock failure');
+            }
+            return { uuid: 'asset-1', url: String(query) };
+        }
+        throw new Error(`Unexpected request: ${channel}.${method}`);
+    };
+
     const server = new MCPServer(settings, {
-        toolExecutors: {
-            mock: new MockTools()
-        },
-        sessionIdGenerator: () => 'session-fixed'
+        sessionIdGenerator: () => 'session-fixed',
+        nextRuntimeFactory: async () => {
+            const tools = createOfficialTools(requester);
+            const matrix = createMatrix([
+                'asset-db.query-assets',
+                'asset-db.query-asset-info'
+            ]);
+            const registry = new NextToolRegistry(tools, matrix);
+            const router = new NextMcpRouter(registry);
+            return { registry, router };
+        }
     });
 
     await server.start();
@@ -157,12 +188,12 @@ async function main(): Promise<void> {
         assert.strictEqual(parseError.statusCode, 400);
         assert.strictEqual(parseJson(parseError.body).error.code, -32700);
 
-        // 2. POST batch 在 V2 中不支持 => -32600
+        // 2. POST batch 不支持 => -32600
         const emptyBatch = await postRaw(port, '[]');
         assert.strictEqual(emptyBatch.statusCode, 200);
         assert.strictEqual(parseJson(emptyBatch.body).error.code, -32600);
 
-        // initialize，确认返回 MCP-Session-Id
+        // initialize 并提取会话
         const initialize = await postRaw(
             port,
             JSON.stringify({
@@ -176,14 +207,14 @@ async function main(): Promise<void> {
         const sessionId = initialize.headers['mcp-session-id'] as string;
         assert.ok(sessionId, 'initialize 必须返回 MCP-Session-Id');
 
-        // 7. 初始化后缺失 session header => HTTP 400
+        // 缺失会话头 => HTTP 400
         const missingHeader = await postRaw(
             port,
             JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' })
         );
         assert.strictEqual(missingHeader.statusCode, 400);
 
-        // 5. 未完成 initialized 前调用 tools/list => 生命周期错误
+        // 未 ready 前调用 tools/list => -32600
         const notReadyList = await postRaw(
             port,
             JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/list' }),
@@ -201,7 +232,7 @@ async function main(): Promise<void> {
         assert.strictEqual(initializedNotification.statusCode, 202);
         assert.strictEqual(initializedNotification.body, '');
 
-        // 3. notification（单消息）=> 202 且无 body
+        // 普通 notification => 202 且无 body
         const progressNotification = await postRaw(
             port,
             JSON.stringify({ jsonrpc: '2.0', method: 'notifications/progress', params: { value: 1 } }),
@@ -210,7 +241,7 @@ async function main(): Promise<void> {
         assert.strictEqual(progressNotification.statusCode, 202);
         assert.strictEqual(progressNotification.body, '');
 
-        // 4. tools/list 返回 V2 列表（含 _meta）
+        // tools/list 返回 next 工具并带 _meta
         const listResult = await postRaw(
             port,
             JSON.stringify({ jsonrpc: '2.0', id: 4, method: 'tools/list' }),
@@ -222,7 +253,7 @@ async function main(): Promise<void> {
         assert.ok(listBody.result.tools.length > 0);
         assert.ok(listBody.result.tools[0]._meta);
 
-        // 8. 未知方法 => -32601
+        // 未知方法 => -32601
         const unknownMethod = await postRaw(
             port,
             JSON.stringify({ jsonrpc: '2.0', id: 5, method: 'unknown/method' }),
@@ -231,7 +262,7 @@ async function main(): Promise<void> {
         assert.strictEqual(unknownMethod.statusCode, 200);
         assert.strictEqual(parseJson(unknownMethod.body).error.code, -32601);
 
-        // 9. tools/call 缺少 name => -32602
+        // tools/call 缺少 name => -32602
         const missingName = await postRaw(
             port,
             JSON.stringify({ jsonrpc: '2.0', id: 6, method: 'tools/call', params: {} }),
@@ -240,7 +271,7 @@ async function main(): Promise<void> {
         assert.strictEqual(missingName.statusCode, 200);
         assert.strictEqual(parseJson(missingName.body).error.code, -32602);
 
-        // 10. 工具业务失败 => result.isError = true + structuredContent.success=false
+        // 业务失败 => result.isError = true
         const businessFailure = await postRaw(
             port,
             JSON.stringify({
@@ -248,9 +279,9 @@ async function main(): Promise<void> {
                 id: 7,
                 method: 'tools/call',
                 params: {
-                    name: 'mock_echo',
+                    name: 'asset_query_asset_info',
                     arguments: {
-                        fail: true
+                        urlOrUuid: 'bad://missing'
                     }
                 }
             }),
@@ -262,23 +293,23 @@ async function main(): Promise<void> {
         assert.strictEqual(businessBody.result.structuredContent.success, false);
         assert.ok(typeof businessBody.result.structuredContent.error.code === 'string');
 
-        // 11. get_tool_manifest 可查询工具元数据
+        // get_tool_manifest
         const manifestResult = await postRaw(
             port,
             JSON.stringify({
                 jsonrpc: '2.0',
                 id: 8,
                 method: 'get_tool_manifest',
-                params: { name: 'mock_echo' }
+                params: { name: 'asset_query_asset_info' }
             }),
             sessionId
         );
         assert.strictEqual(manifestResult.statusCode, 200);
         const manifestBody = parseJson(manifestResult.body);
-        assert.strictEqual(manifestBody.result.name, 'mock_echo');
-        assert.ok(typeof manifestBody.result.layer === 'string');
+        assert.strictEqual(manifestBody.result.name, 'asset_query_asset_info');
+        assert.strictEqual(manifestBody.result._meta.layer, 'official');
 
-        // 12. get_trace_by_id 可查询调用记录
+        // get_trace_by_id
         const traceId = businessBody.result.structuredContent.meta.traceId;
         const traceResult = await postRaw(
             port,
@@ -293,12 +324,13 @@ async function main(): Promise<void> {
         assert.strictEqual(traceResult.statusCode, 200);
         const traceBody = parseJson(traceResult.body);
         assert.strictEqual(traceBody.result.trace.traceId, traceId);
+        assert.strictEqual(traceBody.result.trace.tool, 'asset_query_asset_info');
 
-        // 13. DELETE /mcp 关闭会话
+        // DELETE /mcp
         const deleteResult = await deleteSession(port, sessionId);
         assert.strictEqual(deleteResult.statusCode, 204);
 
-        // 14. 会话删除后再次调用 => HTTP 400
+        // 删除会话后请求 => HTTP 400
         const afterDelete = await postRaw(
             port,
             JSON.stringify({ jsonrpc: '2.0', id: 10, method: 'tools/list' }),

@@ -1,20 +1,6 @@
 import * as http from 'http';
 import { randomUUID } from 'crypto';
 import { MCPServerSettings, ServerStatus, MCPClient, ToolDefinition } from './types';
-import { SceneTools } from './tools/scene-tools';
-import { NodeTools } from './tools/node-tools';
-import { ComponentTools } from './tools/component-tools';
-import { PrefabTools } from './tools/prefab-tools';
-import { ProjectTools } from './tools/project-tools';
-import { DebugTools } from './tools/debug-tools';
-import { PreferencesTools } from './tools/preferences-tools';
-import { ServerTools } from './tools/server-tools';
-import { BroadcastTools } from './tools/broadcast-tools';
-import { SceneAdvancedTools } from './tools/scene-advanced-tools';
-import { SceneViewTools } from './tools/scene-view-tools';
-import { ReferenceImageTools } from './tools/reference-image-tools';
-import { AssetAdvancedTools } from './tools/asset-advanced-tools';
-import { ValidationTools } from './tools/validation-tools';
 import { createJsonRpcErrorResponse, JsonRpcErrorCode } from './mcp/errors';
 import { parseJsonRpcBody, readRawBody } from './mcp/jsonrpc';
 import {
@@ -37,17 +23,19 @@ import {
 } from './mcp/lifecycle';
 import { McpSession, SessionStore } from './mcp/session-store';
 import { StreamableHttpManager } from './mcp/streamable-http';
-import { V2ToolService } from './mcp/v2-tool-service';
-
-interface ToolExecutorLike {
-    getTools(): ToolDefinition[];
-    execute(toolName: string, args: any): Promise<any>;
-}
+import { createNextRuntime, NextMcpRouter, NextToolRegistry } from './next';
+import { CapabilityCheck, EditorRequester } from './next/models';
 
 interface MCPServerDependencies {
-    toolExecutors?: Record<string, ToolExecutorLike>;
     sessionIdGenerator?: () => string;
     now?: () => number;
+    nextRequester?: EditorRequester;
+    nextChecks?: CapabilityCheck[];
+    nextIncludeWriteChecks?: boolean;
+    nextRuntimeFactory?: () => Promise<{
+        router: NextMcpRouter;
+        registry: NextToolRegistry;
+    }>;
 }
 
 interface MCPRequestContext {
@@ -63,12 +51,20 @@ interface MessageHandleResult {
 export class MCPServer {
     private settings: MCPServerSettings;
     private httpServer: http.Server | null = null;
-    private tools: Record<string, ToolExecutorLike> = {};
     private toolsList: ToolDefinition[] = [];
-    private enabledTools: any[] = []; // 存储启用的工具列表
+    private enabledTools: any[] = []; // 暂存面板配置（Next 版本不再用于过滤工具）
     private readonly sessionStore = new SessionStore();
     private readonly streamableHttp = new StreamableHttpManager();
-    private v2ToolService: V2ToolService | null = null;
+    private readonly nextRuntimeFactory: () => Promise<{
+        router: NextMcpRouter;
+        registry: NextToolRegistry;
+    }>;
+    private nextRuntimePromise: Promise<{
+        router: NextMcpRouter;
+        registry: NextToolRegistry;
+    }> | null = null;
+    private nextRouter: NextMcpRouter | null = null;
+    private nextRegistry: NextToolRegistry | null = null;
     private readonly sessionIdGenerator: () => string;
     private readonly now: () => number;
 
@@ -76,38 +72,14 @@ export class MCPServer {
         this.settings = settings;
         this.sessionIdGenerator = dependencies.sessionIdGenerator ?? (() => randomUUID());
         this.now = dependencies.now ?? (() => Date.now());
-        this.initializeTools(dependencies.toolExecutors);
-    }
-
-    private initializeTools(customTools?: Record<string, ToolExecutorLike>): void {
-        if (customTools) {
-            this.tools = customTools;
-            this.setupTools();
-            console.log('[MCPServer] 使用注入工具执行器初始化完成');
-            return;
-        }
-
-        try {
-            console.log('[MCPServer] Initializing tools...');
-            this.tools.scene = new SceneTools();
-            this.tools.node = new NodeTools();
-            this.tools.component = new ComponentTools();
-            this.tools.prefab = new PrefabTools();
-            this.tools.project = new ProjectTools();
-            this.tools.debug = new DebugTools();
-            this.tools.preferences = new PreferencesTools();
-            this.tools.server = new ServerTools();
-            this.tools.broadcast = new BroadcastTools();
-            this.tools.sceneAdvanced = new SceneAdvancedTools();
-            this.tools.sceneView = new SceneViewTools();
-            this.tools.referenceImage = new ReferenceImageTools();
-            this.tools.assetAdvanced = new AssetAdvancedTools();
-            this.tools.validation = new ValidationTools();
-            console.log('[MCPServer] Tools initialized successfully');
-        } catch (error) {
-            console.error('[MCPServer] Error initializing tools:', error);
-            throw error;
-        }
+        this.nextRuntimeFactory = dependencies.nextRuntimeFactory ?? (() => createNextRuntime({
+            requester: dependencies.nextRequester,
+            checks: dependencies.nextChecks,
+            includeWriteChecks: dependencies.nextIncludeWriteChecks ?? true
+        }).then((runtime) => ({
+            router: runtime.router,
+            registry: runtime.registry
+        })));
     }
 
     public async start(): Promise<void> {
@@ -137,7 +109,7 @@ export class MCPServer {
                 });
             });
 
-            this.setupTools();
+            await this.ensureNextRuntime();
             console.log('[MCPServer] 🚀 MCP Server is ready for connections');
         } catch (error) {
             console.error('[MCPServer] ❌ Failed to start server:', error);
@@ -145,70 +117,74 @@ export class MCPServer {
         }
     }
 
-    private setupTools(): void {
-        this.toolsList = [];
-
-        // 如果没有启用工具配置，返回所有工具
-        if (!this.enabledTools || this.enabledTools.length === 0) {
-            for (const [category, toolSet] of Object.entries(this.tools)) {
-                const tools = toolSet.getTools();
-                for (const tool of tools) {
-                    this.toolsList.push({
-                        name: `${category}_${tool.name}`,
-                        description: tool.description,
-                        inputSchema: tool.inputSchema
-                    });
-                }
-            }
-        } else {
-            // 根据启用的工具配置过滤
-            const enabledToolNames = new Set(this.enabledTools.map(tool => `${tool.category}_${tool.name}`));
-
-            for (const [category, toolSet] of Object.entries(this.tools)) {
-                const tools = toolSet.getTools();
-                for (const tool of tools) {
-                    const toolName = `${category}_${tool.name}`;
-                    if (enabledToolNames.has(toolName)) {
-                        this.toolsList.push({
-                            name: toolName,
-                            description: tool.description,
-                            inputSchema: tool.inputSchema
-                        });
-                    }
-                }
-            }
+    private async ensureNextRuntime(): Promise<void> {
+        if (this.nextRouter && this.nextRegistry) {
+            return;
         }
 
-        console.log(`[MCPServer] Setup tools: ${this.toolsList.length} tools available`);
-        this.v2ToolService = new V2ToolService(
-            this.toolsList,
-            this.executeToolCall.bind(this),
-            {
-                version: '2.0.0',
-                now: this.now
-            }
-        );
+        if (!this.nextRuntimePromise) {
+            this.nextRuntimePromise = this.nextRuntimeFactory();
+        }
+
+        try {
+            const runtime = await this.nextRuntimePromise;
+            this.nextRouter = runtime.router;
+            this.nextRegistry = runtime.registry;
+            this.toolsList = this.nextRegistry.listTools().map((tool) => ({
+                name: tool.name,
+                description: tool.description,
+                inputSchema: tool.inputSchema
+            }));
+            console.log(`[MCPServer] Setup tools (next): ${this.toolsList.length} tools available`);
+        } catch (error) {
+            this.nextRuntimePromise = null;
+            throw error;
+        }
+    }
+
+    private async getNextRouter(): Promise<NextMcpRouter> {
+        await this.ensureNextRuntime();
+        if (!this.nextRouter) {
+            throw new Error('Next router is not initialized');
+        }
+        return this.nextRouter;
     }
 
     public getFilteredTools(enabledTools: any[]): ToolDefinition[] {
         if (!enabledTools || enabledTools.length === 0) {
-            return this.toolsList; // 如果没有过滤配置，返回所有工具
+            return this.toolsList;
         }
 
-        const enabledToolNames = new Set(enabledTools.map(tool => `${tool.category}_${tool.name}`));
-        return this.toolsList.filter(tool => enabledToolNames.has(tool.name));
+        const enabledToolNames = new Set(enabledTools.map((tool) => `${tool.category}_${tool.name}`));
+        return this.toolsList.filter((tool) => enabledToolNames.has(tool.name));
     }
 
     public async executeToolCall(toolName: string, args: any): Promise<any> {
-        const parts = toolName.split('_');
-        const category = parts[0];
-        const toolMethodName = parts.slice(1).join('_');
+        const router = await this.getNextRouter();
+        const callResponse = await router.handle({
+            jsonrpc: '2.0',
+            id: `simple-api:${this.sessionIdGenerator()}`,
+            method: MCP_METHODS.ToolsCall,
+            params: {
+                name: toolName,
+                arguments: isRecord(args) ? args : {}
+            }
+        });
 
-        if (this.tools[category]) {
-            return await this.tools[category].execute(toolMethodName, args);
+        if (!callResponse) {
+            throw new Error(`Tool ${toolName} returned empty response`);
+        }
+        if (callResponse.error) {
+            throw new Error(callResponse.error.message);
         }
 
-        throw new Error(`Tool ${toolName} not found`);
+        const payload = callResponse.result as any;
+        if (payload?.isError === true) {
+            const businessError = payload?.structuredContent?.error;
+            throw new Error(businessError?.message || `Tool ${toolName} execution failed`);
+        }
+
+        return payload?.structuredContent?.data;
     }
 
     public getClients(): MCPClient[] {
@@ -225,23 +201,10 @@ export class MCPServer {
     public updateEnabledTools(enabledTools: any[]): void {
         console.log(`[MCPServer] Updating enabled tools: ${enabledTools.length} tools`);
         this.enabledTools = enabledTools;
-        this.setupTools(); // 重新设置工具列表
     }
 
     public getSettings(): MCPServerSettings {
         return this.settings;
-    }
-
-    private getV2ToolService(): V2ToolService {
-        if (!this.v2ToolService) {
-            this.setupTools();
-        }
-
-        if (!this.v2ToolService) {
-            throw new Error('V2 tool service is not initialized');
-        }
-
-        return this.v2ToolService;
     }
 
     private async handleHttpRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
@@ -522,153 +485,32 @@ export class MCPServer {
     }
 
     private async handleRequestMessage(message: JsonRpcRequest): Promise<JsonRpcResponseMessage> {
-        const { id, method } = message;
-        const v2ToolService = this.getV2ToolService();
-
-        switch (method) {
-            case MCP_METHODS.ToolsList:
-                return {
-                    jsonrpc: '2.0',
-                    id,
-                    result: { tools: v2ToolService.listTools() }
-                };
-            case MCP_METHODS.ToolsCall:
-                return this.handleToolsCallRequest(message);
-            case MCP_METHODS.GetToolManifest:
-                return this.handleGetToolManifestRequest(message);
-            case MCP_METHODS.GetTraceById:
-                return this.handleGetTraceByIdRequest(message);
-            case MCP_METHODS.Ping:
-                return {
-                    jsonrpc: '2.0',
-                    id,
-                    result: {}
-                };
-            default:
-                return createJsonRpcErrorResponse(
-                    id,
-                    JsonRpcErrorCode.MethodNotFound,
-                    `Method not found: ${method}`
-                );
-        }
-    }
-
-    private async handleToolsCallRequest(message: JsonRpcRequest): Promise<JsonRpcResponseMessage> {
-        const { id, params } = message;
-        const v2ToolService = this.getV2ToolService();
-
-        if (!isRecord(params)) {
-            return createJsonRpcErrorResponse(
-                id,
-                JsonRpcErrorCode.InvalidParams,
-                'Invalid params for tools/call: params must be an object'
-            );
-        }
-
-        const name = params.name;
-        if (typeof name !== 'string' || !name.trim()) {
-            return createJsonRpcErrorResponse(
-                id,
-                JsonRpcErrorCode.InvalidParams,
-                'Invalid params for tools/call: "name" is required'
-            );
-        }
-
-        const args = isRecord(params.arguments) ? params.arguments : {};
-
-        if (!v2ToolService.hasTool(name)) {
-            return createJsonRpcErrorResponse(
-                id,
-                JsonRpcErrorCode.InvalidParams,
-                `Unknown tool: ${name}`
-            );
-        }
-
-        try {
-            const toolResult = await v2ToolService.callTool(name, args);
-
+        const { id, method, params } = message;
+        if (method === MCP_METHODS.Ping) {
             return {
                 jsonrpc: '2.0',
                 id,
-                result: {
-                    content: [{ type: 'text', text: toolResult.contentText }],
-                    structuredContent: toolResult.structuredContent,
-                    ...(toolResult.isError ? { isError: true } : {})
-                }
+                result: {}
             };
-        } catch (error: any) {
-            const messageText = String(error?.message ?? error);
-            return createJsonRpcErrorResponse(
-                id,
-                JsonRpcErrorCode.InternalError,
-                messageText
-            );
-        }
-    }
-
-    private handleGetToolManifestRequest(message: JsonRpcRequest): JsonRpcResponseMessage {
-        const { id, params } = message;
-
-        if (!isRecord(params)) {
-            return createJsonRpcErrorResponse(
-                id,
-                JsonRpcErrorCode.InvalidParams,
-                'Invalid params for get_tool_manifest: params must be an object'
-            );
         }
 
-        const name = params.name;
-        if (typeof name !== 'string' || !name.trim()) {
-            return createJsonRpcErrorResponse(
-                id,
-                JsonRpcErrorCode.InvalidParams,
-                'Invalid params for get_tool_manifest: "name" is required'
-            );
-        }
-
-        const manifest = this.getV2ToolService().getManifest(name);
-        if (!manifest) {
-            return createJsonRpcErrorResponse(
-                id,
-                JsonRpcErrorCode.InvalidParams,
-                `Unknown tool: ${name}`
-            );
-        }
-
-        return {
+        const router = await this.getNextRouter();
+        const routed = await router.handle({
             jsonrpc: '2.0',
             id,
-            result: manifest
-        };
-    }
+            method,
+            params
+        });
 
-    private handleGetTraceByIdRequest(message: JsonRpcRequest): JsonRpcResponseMessage {
-        const { id, params } = message;
-
-        if (!isRecord(params)) {
-            return createJsonRpcErrorResponse(
-                id,
-                JsonRpcErrorCode.InvalidParams,
-                'Invalid params for get_trace_by_id: params must be an object'
-            );
+        if (routed) {
+            return routed as JsonRpcResponseMessage;
         }
 
-        const traceId = params.traceId;
-        if (typeof traceId !== 'string' || !traceId.trim()) {
-            return createJsonRpcErrorResponse(
-                id,
-                JsonRpcErrorCode.InvalidParams,
-                'Invalid params for get_trace_by_id: "traceId" is required'
-            );
-        }
-
-        return {
-            jsonrpc: '2.0',
+        return createJsonRpcErrorResponse(
             id,
-            result: {
-                trace: this.getV2ToolService().getTraceById(traceId)
-            }
-        };
+            JsonRpcErrorCode.InternalError,
+            `Invalid router response for method: ${method}`
+        );
     }
 
     private handleMCPGet(req: http.IncomingMessage, res: http.ServerResponse): void {

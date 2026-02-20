@@ -1,267 +1,196 @@
 import * as assert from 'assert';
-import { ToolDefinition } from '../types';
-import { V2ToolService } from '../mcp/v2-tool-service';
+import { CapabilityMatrix } from '../next/models';
+import { createOfficialTools } from '../next/tools/official-tools';
+import { NextToolRegistry } from '../next/protocol/tool-registry';
+import { NextMcpRouter } from '../next/protocol/router';
 
-interface MockState {
-    nodeInfo: {
-        uuid: string;
-        position: { x: number; y: number; z: number };
-        rotation: { x: number; y: number; z: number };
-        scale: { x: number; y: number; z: number };
-    };
-}
+function createMatrix(availableKeys: string[]): CapabilityMatrix {
+    const byKey: CapabilityMatrix['byKey'] = {};
+    for (const key of availableKeys) {
+        const firstDot = key.indexOf('.');
+        byKey[key] = {
+            key,
+            channel: key.slice(0, firstDot),
+            method: key.slice(firstDot + 1),
+            layer: 'official',
+            readonly: true,
+            description: key,
+            available: true,
+            checkedAt: new Date().toISOString(),
+            detail: 'ok'
+        };
+    }
 
-function createLegacyTools(): ToolDefinition[] {
-    return [
-        { name: 'node_create_node', description: 'mock', inputSchema: { type: 'object', properties: {} } },
-        { name: 'component_attach_script', description: 'mock', inputSchema: { type: 'object', properties: {} } },
-        { name: 'component_set_component_property', description: 'mock', inputSchema: { type: 'object', properties: {} } },
-        { name: 'node_get_node_info', description: 'mock', inputSchema: { type: 'object', properties: {} } },
-        { name: 'node_set_node_transform', description: 'mock', inputSchema: { type: 'object', properties: {} } },
-        { name: 'project_import_asset', description: 'mock', inputSchema: { type: 'object', properties: {} } },
-        { name: 'project_get_asset_details', description: 'mock', inputSchema: { type: 'object', properties: {} } },
-        { name: 'scene_open_scene', description: 'mock', inputSchema: { type: 'object', properties: {} } },
-        { name: 'debug_validate_scene', description: 'mock', inputSchema: { type: 'object', properties: {} } },
-        { name: 'prefab_instantiate_prefab', description: 'mock', inputSchema: { type: 'object', properties: {} } },
-        { name: 'prefab_update_prefab', description: 'mock', inputSchema: { type: 'object', properties: {} } }
-    ];
-}
-
-function createLegacyInvoker(state: MockState): (toolName: string, args: any) => Promise<any> {
-    return async (toolName: string, args: any): Promise<any> => {
-        if (toolName === 'node_create_node') {
-            return {
-                success: true,
-                data: {
-                    uuid: 'node-created-1',
-                    name: args.name
-                }
-            };
-        }
-
-        if (toolName === 'component_attach_script') {
-            return {
-                success: true,
-                data: {
-                    componentUuid: 'component-script-1'
-                }
-            };
-        }
-
-        if (toolName === 'component_set_component_property') {
-            return {
-                success: true,
-                data: {
-                    applied: true
-                }
-            };
-        }
-
-        if (toolName === 'node_get_node_info') {
-            return {
-                success: true,
-                data: {
-                    ...state.nodeInfo
-                }
-            };
-        }
-
-        if (toolName === 'node_set_node_transform') {
-            if (args.position) {
-                state.nodeInfo.position = {
-                    ...state.nodeInfo.position,
-                    ...args.position
-                };
-            }
-            if (args.rotation) {
-                state.nodeInfo.rotation = {
-                    ...state.nodeInfo.rotation,
-                    ...args.rotation
-                };
-            }
-            if (args.scale) {
-                state.nodeInfo.scale = {
-                    ...state.nodeInfo.scale,
-                    ...args.scale
-                };
-            }
-            return {
-                success: true,
-                warning: ''
-            };
-        }
-
-        if (toolName === 'project_import_asset') {
-            if (args.sourcePath === '/tmp/bad.png') {
-                return {
-                    success: false,
-                    error: 'Source file not found'
-                };
-            }
-
-            return {
-                success: true,
-                data: {
-                    uuid: 'asset-uuid-1',
-                    path: 'db://assets/workflow-imports/icon.png'
-                }
-            };
-        }
-
-        if (toolName === 'project_get_asset_details') {
-            return {
-                success: true,
-                data: {
-                    subAssets: [
-                        {
-                            type: 'spriteFrame',
-                            uuid: 'asset-uuid-1@f9941'
-                        }
-                    ]
-                }
-            };
-        }
-
-        if (toolName === 'scene_open_scene') {
-            return {
-                success: true,
-                message: `opened: ${args.scenePath}`
-            };
-        }
-
-        if (toolName === 'debug_validate_scene') {
-            return {
-                success: true,
-                data: {
-                    valid: true,
-                    issueCount: 0,
-                    issues: []
-                }
-            };
-        }
-
-        if (toolName === 'prefab_instantiate_prefab') {
-            return {
-                success: true,
-                data: {
-                    nodeUuid: 'prefab-node-1'
+    return {
+        generatedAt: new Date().toISOString(),
+        byKey,
+        summary: {
+            total: availableKeys.length,
+            available: availableKeys.length,
+            unavailable: 0,
+            byLayer: {
+                official: {
+                    total: availableKeys.length,
+                    available: availableKeys.length
                 },
-                message: 'prefab instantiated'
-            };
+                extended: {
+                    total: 0,
+                    available: 0
+                },
+                experimental: {
+                    total: 0,
+                    available: 0
+                }
+            }
         }
-
-        if (toolName === 'prefab_update_prefab') {
-            return {
-                success: true,
-                message: 'prefab updated'
-            };
-        }
-
-        throw new Error(`Unexpected tool call: ${toolName}`);
     };
 }
 
 async function main(): Promise<void> {
-    const state: MockState = {
-        nodeInfo: {
-            uuid: 'node-target-1',
-            position: { x: 0, y: 0, z: 0 },
-            rotation: { x: 0, y: 0, z: 0 },
-            scale: { x: 1, y: 1, z: 1 }
-        }
+    const state = {
+        nodeUuid: 'node-created-1',
+        componentUuid: 'component-label-1',
+        setPropertyCalls: [] as Array<any>
     };
 
-    const service = new V2ToolService(
-        createLegacyTools(),
-        createLegacyInvoker(state),
-        {
-            now: (() => {
-                let tick = 0;
-                return () => {
-                    tick += 10;
-                    return tick;
-                };
-            })(),
-            traceIdGenerator: (() => {
-                let id = 0;
-                return () => {
-                    id += 1;
-                    return `trc_test_${id}`;
-                };
-            })(),
-            visibleLayers: ['core', 'advanced', 'internal']
+    const requester = async (channel: string, method: string, ...args: any[]): Promise<any> => {
+        if (channel === 'scene' && method === 'create-node') {
+            return state.nodeUuid;
         }
-    );
+        if (channel === 'scene' && method === 'create-component') {
+            return undefined;
+        }
+        if (channel === 'scene' && method === 'query-node') {
+            return {
+                uuid: { value: state.nodeUuid },
+                __comps__: [
+                    {
+                        __type__: { value: 'cc.Label' },
+                        uuid: { value: state.componentUuid }
+                    }
+                ]
+            };
+        }
+        if (channel === 'scene' && method === 'set-property') {
+            state.setPropertyCalls.push(args[0]);
+            return true;
+        }
+        if (channel === 'asset-db' && method === 'query-asset-dependencies') {
+            return ['dep-1', 'dep-2'];
+        }
+        if (channel === 'asset-db' && method === 'query-asset-info') {
+            const uuid = args[0];
+            return {
+                uuid,
+                url: `db://assets/${uuid}.prefab`
+            };
+        }
+        throw new Error(`Unexpected request: ${channel}.${method}`);
+    };
 
-    const dryRunCreate = await service.callTool('workflow_create_ui_node_with_components', {
-        parentUuid: 'parent-1',
-        name: 'Panel',
-        components: ['cc.UITransform'],
-        dryRun: true
+    const tools = createOfficialTools(requester);
+    const matrix = createMatrix([
+        'scene.create-node',
+        'scene.create-component',
+        'scene.query-node',
+        'scene.set-property',
+        'asset-db.query-asset-dependencies',
+        'asset-db.query-asset-info'
+    ]);
+    const registry = new NextToolRegistry(tools, matrix);
+    const router = new NextMcpRouter(registry);
+
+    const listResponse = await router.handle({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/list'
     });
-    assert.strictEqual(dryRunCreate.isError, false);
-    assert.strictEqual(dryRunCreate.structuredContent.success, true);
-    assert.strictEqual((dryRunCreate.structuredContent.data as any).dryRun, true);
+    assert.ok(listResponse);
+    const toolNames = listResponse!.result.tools.map((item: any) => item.name);
+    assert.ok(toolNames.includes('scene_create_game_object'));
+    assert.ok(toolNames.includes('component_add_component'));
+    assert.ok(toolNames.includes('component_set_property'));
+    assert.ok(toolNames.includes('asset_query_dependencies'));
 
-    const createNode = await service.callTool('workflow_create_ui_node_with_components', {
-        parentUuid: 'parent-1',
-        name: 'Panel',
-        components: ['cc.UITransform', 'cc.Sprite']
-    });
-    assert.strictEqual(createNode.isError, false);
-    assert.strictEqual((createNode.structuredContent.data as any).nodeUuid, 'node-created-1');
-
-    const bindScript = await service.callTool('workflow_bind_script_to_node', {
-        nodeUuid: 'node-target-1',
-        scriptPath: 'db://assets/scripts/Player.ts',
-        properties: [
-            {
-                property: 'speed',
-                propertyType: 'number',
-                value: 7
+    const createNodeResponse = await router.handle({
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'tools/call',
+        params: {
+            name: 'scene_create_game_object',
+            arguments: {
+                name: 'UIRoot'
             }
-        ]
+        }
     });
-    assert.strictEqual(bindScript.isError, false);
-    assert.strictEqual((bindScript.structuredContent.data as any).appliedProperties.length, 1);
+    assert.ok(createNodeResponse);
+    assert.strictEqual(createNodeResponse!.result.isError, false);
+    assert.strictEqual(createNodeResponse!.result.structuredContent.data.nodeUuid, state.nodeUuid);
 
-    const safeTransform = await service.callTool('workflow_safe_set_transform', {
-        nodeUuid: 'node-target-1',
-        position: { x: 100, y: 200, z: 0 }
+    const addComponentResponse = await router.handle({
+        jsonrpc: '2.0',
+        id: 3,
+        method: 'tools/call',
+        params: {
+            name: 'component_add_component',
+            arguments: {
+                nodeUuid: state.nodeUuid,
+                componentType: 'cc.Label'
+            }
+        }
     });
-    assert.strictEqual(safeTransform.isError, false);
-    const safeData = safeTransform.structuredContent.data as any;
-    assert.strictEqual(safeData.before.position.x, 0);
-    assert.strictEqual(safeData.after.position.x, 100);
+    assert.ok(addComponentResponse);
+    assert.strictEqual(addComponentResponse!.result.isError, false);
 
-    const importSprite = await service.callTool('workflow_import_and_assign_sprite', {
-        sourcePath: '/tmp/icon.png',
-        targetNodeUuid: 'node-target-1'
+    const setPropertyResponse = await router.handle({
+        jsonrpc: '2.0',
+        id: 4,
+        method: 'tools/call',
+        params: {
+            name: 'component_set_property',
+            arguments: {
+                nodeUuid: state.nodeUuid,
+                componentType: 'cc.Label',
+                propertyPath: 'string',
+                value: 'Hello Workflow',
+                valueType: 'String'
+            }
+        }
     });
-    assert.strictEqual(importSprite.isError, false);
-    assert.strictEqual((importSprite.structuredContent.data as any).assetUuid, 'asset-uuid-1');
-    assert.strictEqual((importSprite.structuredContent.data as any).spriteFrameUuid, 'asset-uuid-1@f9941');
+    assert.ok(setPropertyResponse);
+    assert.strictEqual(setPropertyResponse!.result.isError, false);
+    assert.strictEqual(state.setPropertyCalls.length, 1);
+    assert.strictEqual(state.setPropertyCalls[0].path, '__comps__.0.string');
+    assert.strictEqual(state.setPropertyCalls[0].dump.value, 'Hello Workflow');
 
-    const openAndValidate = await service.callTool('workflow_open_scene_and_validate', {
-        scenePath: 'db://assets/scenes/Main.scene'
+    const dependenciesResponse = await router.handle({
+        jsonrpc: '2.0',
+        id: 5,
+        method: 'tools/call',
+        params: {
+            name: 'asset_query_dependencies',
+            arguments: {
+                urlOrUuid: 'db://assets/prefabs/player.prefab',
+                relationType: 'asset',
+                includeAssetInfo: true
+            }
+        }
     });
-    assert.strictEqual(openAndValidate.isError, false);
-    assert.strictEqual((openAndValidate.structuredContent.data as any).validationReport.valid, true);
+    assert.ok(dependenciesResponse);
+    assert.strictEqual(dependenciesResponse!.result.isError, false);
+    assert.strictEqual(dependenciesResponse!.result.structuredContent.data.count, 2);
+    assert.strictEqual(dependenciesResponse!.result.structuredContent.data.dependencyInfos.length, 2);
 
-    const createPrefab = await service.callTool('workflow_create_or_update_prefab_instance', {
-        prefabPath: 'db://assets/prefabs/Hud.prefab',
-        parentUuid: 'canvas-1'
+    const traceId = dependenciesResponse!.result.structuredContent.meta.traceId;
+    const traceResponse = await router.handle({
+        jsonrpc: '2.0',
+        id: 6,
+        method: 'get_trace_by_id',
+        params: { traceId }
     });
-    assert.strictEqual(createPrefab.isError, false);
-    assert.strictEqual((createPrefab.structuredContent.data as any).nodeUuid, 'prefab-node-1');
-
-    const failImport = await service.callTool('workflow_import_and_assign_sprite', {
-        sourcePath: '/tmp/bad.png',
-        targetNodeUuid: 'node-target-1'
-    });
-    assert.strictEqual(failImport.isError, true);
-    assert.strictEqual(failImport.structuredContent.success, false);
-    assert.strictEqual(failImport.structuredContent.error?.stage, 'import_asset');
+    assert.ok(traceResponse);
+    assert.strictEqual(traceResponse!.result.trace.traceId, traceId);
+    assert.strictEqual(traceResponse!.result.trace.tool, 'asset_query_dependencies');
 
     console.log('mcp-v2-workflow-test: PASS');
 }

@@ -2,42 +2,58 @@ import * as assert from 'assert';
 import * as http from 'http';
 import { AddressInfo } from 'net';
 import { MCPServer } from '../mcp-server';
-import { MCPServerSettings, ToolDefinition } from '../types';
-
-class MockTools {
-    public getTools(): ToolDefinition[] {
-        return [
-            {
-                name: 'echo',
-                description: 'Echo args for V2 manifest test',
-                inputSchema: {
-                    type: 'object',
-                    properties: {
-                        value: { type: 'string' }
-                    }
-                }
-            }
-        ];
-    }
-
-    public async execute(toolName: string, args: any): Promise<any> {
-        if (toolName !== 'echo') {
-            throw new Error(`Tool mock_${toolName} not found`);
-        }
-
-        return {
-            success: true,
-            data: {
-                echo: args
-            }
-        };
-    }
-}
+import { MCPServerSettings } from '../types';
+import { CapabilityMatrix } from '../next/models';
+import { createOfficialTools } from '../next/tools/official-tools';
+import { NextToolRegistry } from '../next/protocol/tool-registry';
+import { NextMcpRouter } from '../next/protocol/router';
 
 interface HttpResult {
     statusCode: number;
     headers: http.IncomingHttpHeaders;
     body: string;
+}
+
+function createMatrix(availableKeys: string[]): CapabilityMatrix {
+    const byKey: CapabilityMatrix['byKey'] = {};
+    for (const key of availableKeys) {
+        const firstDot = key.indexOf('.');
+        byKey[key] = {
+            key,
+            channel: key.slice(0, firstDot),
+            method: key.slice(firstDot + 1),
+            layer: 'official',
+            readonly: true,
+            description: key,
+            available: true,
+            checkedAt: new Date().toISOString(),
+            detail: 'ok'
+        };
+    }
+
+    return {
+        generatedAt: new Date().toISOString(),
+        byKey,
+        summary: {
+            total: availableKeys.length,
+            available: availableKeys.length,
+            unavailable: 0,
+            byLayer: {
+                official: {
+                    total: availableKeys.length,
+                    available: availableKeys.length
+                },
+                extended: {
+                    total: 0,
+                    available: 0
+                },
+                experimental: {
+                    total: 0,
+                    available: 0
+                }
+            }
+        }
+    };
 }
 
 function postJson(port: number, payload: unknown, sessionId?: string): Promise<HttpResult> {
@@ -95,11 +111,25 @@ async function main(): Promise<void> {
         maxConnections: 10
     };
 
+    const requester = async (channel: string, method: string, ..._args: any[]): Promise<any> => {
+        if (channel === 'asset-db' && method === 'query-assets') {
+            return [
+                { url: 'db://assets/a.prefab', uuid: 'uuid-a' },
+                { url: 'db://assets/b.prefab', uuid: 'uuid-b' }
+            ];
+        }
+        throw new Error(`Unexpected request: ${channel}.${method}`);
+    };
+
     const server = new MCPServer(settings, {
-        toolExecutors: {
-            mock: new MockTools()
-        },
-        sessionIdGenerator: () => 'session-manifest'
+        sessionIdGenerator: () => 'session-manifest',
+        nextRuntimeFactory: async () => {
+            const tools = createOfficialTools(requester);
+            const matrix = createMatrix(['asset-db.query-assets']);
+            const registry = new NextToolRegistry(tools, matrix);
+            const router = new NextMcpRouter(registry);
+            return { registry, router };
+        }
     });
 
     await server.start();
@@ -134,13 +164,10 @@ async function main(): Promise<void> {
         assert.strictEqual(toolsList.statusCode, 200);
         const toolsListBody = parseJson(toolsList.body);
         const tools = toolsListBody.result.tools as Array<any>;
-        const mockEchoTool = tools.find((item) => item.name === 'mock_echo');
-        assert.ok(mockEchoTool, 'tools/list 中必须包含 mock_echo');
-        assert.ok(mockEchoTool._meta, 'tools/list 中的工具必须包含 _meta');
-        assert.ok(mockEchoTool.outputSchema, 'tools/list 中的工具必须包含 outputSchema');
-
-        const workflowTool = tools.find((item) => item.name === 'workflow_safe_set_transform');
-        assert.ok(workflowTool, 'tools/list 必须包含 workflow 工具');
+        const assetQueryTool = tools.find((item) => item.name === 'asset_query_assets');
+        assert.ok(assetQueryTool, 'tools/list 中必须包含 asset_query_assets');
+        assert.ok(assetQueryTool._meta, 'tools/list 中的工具必须包含 _meta');
+        assert.strictEqual(assetQueryTool._meta.layer, 'official');
 
         const manifest = await postJson(
             port,
@@ -148,17 +175,17 @@ async function main(): Promise<void> {
                 jsonrpc: '2.0',
                 id: 3,
                 method: 'get_tool_manifest',
-                params: { name: 'workflow_safe_set_transform' }
+                params: { name: 'asset_query_assets' }
             },
             sessionId
         );
         assert.strictEqual(manifest.statusCode, 200);
         const manifestBody = parseJson(manifest.body);
-        assert.strictEqual(manifestBody.result.name, 'workflow_safe_set_transform');
-        assert.strictEqual(manifestBody.result.layer, 'core');
-        assert.strictEqual(manifestBody.result.supportsDryRun, true);
-        assert.ok(Array.isArray(manifestBody.result.examples));
-        assert.ok(manifestBody.result.examples.length >= 2);
+        assert.strictEqual(manifestBody.result.name, 'asset_query_assets');
+        assert.strictEqual(manifestBody.result._meta.layer, 'official');
+        assert.strictEqual(manifestBody.result._meta.supportsDryRun, false);
+        assert.ok(Array.isArray(manifestBody.result.requiredCapabilities));
+        assert.ok(manifestBody.result.requiredCapabilities.includes('asset-db.query-assets'));
 
         const toolCall = await postJson(
             port,
@@ -167,9 +194,9 @@ async function main(): Promise<void> {
                 id: 4,
                 method: 'tools/call',
                 params: {
-                    name: 'mock_echo',
+                    name: 'asset_query_assets',
                     arguments: {
-                        value: 'hello'
+                        pattern: 'db://assets/**/*.prefab'
                     }
                 }
             },
@@ -177,32 +204,17 @@ async function main(): Promise<void> {
         );
         assert.strictEqual(toolCall.statusCode, 200);
         const toolCallBody = parseJson(toolCall.body);
-        assert.strictEqual(toolCallBody.result.isError, undefined);
+        assert.strictEqual(toolCallBody.result.isError, false);
         assert.strictEqual(toolCallBody.result.structuredContent.success, true);
-        assert.strictEqual(toolCallBody.result.structuredContent.meta.tool, 'mock_echo');
+        assert.strictEqual(toolCallBody.result.structuredContent.meta.tool, 'asset_query_assets');
         assert.ok(typeof toolCallBody.result.structuredContent.meta.traceId === 'string');
-
-        const unknownTool = await postJson(
-            port,
-            {
-                jsonrpc: '2.0',
-                id: 5,
-                method: 'tools/call',
-                params: {
-                    name: 'unknown_tool',
-                    arguments: {}
-                }
-            },
-            sessionId
-        );
-        assert.strictEqual(unknownTool.statusCode, 200);
-        assert.strictEqual(parseJson(unknownTool.body).error.code, -32602);
+        assert.strictEqual(toolCallBody.result.structuredContent.data.count, 2);
 
         const traceQuery = await postJson(
             port,
             {
                 jsonrpc: '2.0',
-                id: 6,
+                id: 5,
                 method: 'get_trace_by_id',
                 params: {
                     traceId: toolCallBody.result.structuredContent.meta.traceId
@@ -212,7 +224,7 @@ async function main(): Promise<void> {
         );
         assert.strictEqual(traceQuery.statusCode, 200);
         const traceBody = parseJson(traceQuery.body);
-        assert.strictEqual(traceBody.result.trace.tool, 'mock_echo');
+        assert.strictEqual(traceBody.result.trace.tool, 'asset_query_assets');
 
         console.log('mcp-v2-manifest-test: PASS');
     } finally {

@@ -2,35 +2,58 @@ import * as assert from 'assert';
 import * as http from 'http';
 import { AddressInfo } from 'net';
 import { MCPServer } from '../mcp-server';
-import { MCPServerSettings, ToolDefinition } from '../types';
-
-class MockTools {
-    public getTools(): ToolDefinition[] {
-        return [
-            {
-                name: 'echo',
-                description: 'Echo args for test',
-                inputSchema: { type: 'object', properties: {} }
-            }
-        ];
-    }
-
-    public async execute(toolName: string, args: any): Promise<any> {
-        if (toolName !== 'echo') {
-            throw new Error(`Tool mock_${toolName} not found`);
-        }
-
-        return {
-            success: true,
-            data: args
-        };
-    }
-}
+import { MCPServerSettings } from '../types';
+import { CapabilityMatrix } from '../next/models';
+import { createOfficialTools } from '../next/tools/official-tools';
+import { NextToolRegistry } from '../next/protocol/tool-registry';
+import { NextMcpRouter } from '../next/protocol/router';
 
 interface HttpResult {
     statusCode: number;
     headers: http.IncomingHttpHeaders;
     body: string;
+}
+
+function createMatrix(availableKeys: string[]): CapabilityMatrix {
+    const byKey: CapabilityMatrix['byKey'] = {};
+    for (const key of availableKeys) {
+        const firstDot = key.indexOf('.');
+        byKey[key] = {
+            key,
+            channel: key.slice(0, firstDot),
+            method: key.slice(firstDot + 1),
+            layer: 'official',
+            readonly: true,
+            description: key,
+            available: true,
+            checkedAt: new Date().toISOString(),
+            detail: 'ok'
+        };
+    }
+
+    return {
+        generatedAt: new Date().toISOString(),
+        byKey,
+        summary: {
+            total: availableKeys.length,
+            available: availableKeys.length,
+            unavailable: 0,
+            byLayer: {
+                official: {
+                    total: availableKeys.length,
+                    available: availableKeys.length
+                },
+                extended: {
+                    total: 0,
+                    available: 0
+                },
+                experimental: {
+                    total: 0,
+                    available: 0
+                }
+            }
+        }
+    };
 }
 
 function postJson(port: number, payload: unknown, sessionId?: string): Promise<HttpResult> {
@@ -133,10 +156,20 @@ async function main(): Promise<void> {
     };
 
     const server = new MCPServer(settings, {
-        toolExecutors: {
-            mock: new MockTools()
-        },
-        sessionIdGenerator: () => 'session-sse'
+        sessionIdGenerator: () => 'session-sse',
+        nextRuntimeFactory: async () => {
+            const requester = async (channel: string, method: string, ..._args: any[]): Promise<any> => {
+                if (channel === 'asset-db' && method === 'query-assets') {
+                    return [];
+                }
+                throw new Error(`Unexpected request: ${channel}.${method}`);
+            };
+            const tools = createOfficialTools(requester);
+            const matrix = createMatrix(['asset-db.query-assets']);
+            const registry = new NextToolRegistry(tools, matrix);
+            const router = new NextMcpRouter(registry);
+            return { registry, router };
+        }
     });
 
     await server.start();

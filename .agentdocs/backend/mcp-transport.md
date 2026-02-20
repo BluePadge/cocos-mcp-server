@@ -6,7 +6,7 @@
 - 调整初始化握手（`initialize` / `notifications/initialized`）
 - 修改 SSE 或 stdio 桥接逻辑
 
-## 当前实现约束（V2，2026-02-12）
+## 当前实现约束（Next，2026-02-20）
 
 ### 1) HTTP 路由
 - `POST /mcp`：
@@ -37,7 +37,7 @@
 - 对 response 消息（客户端回包）应忽略，不产生响应。
 - notification（单消息）返回 `202` 且无 body。
 
-### 4) 工具结果语义（V2）
+### 4) 工具结果语义（Next）
 - `tools/call` 必须返回：
   - `result.content`（文本摘要）
   - `result.structuredContent`（统一结构）
@@ -52,8 +52,9 @@
 ### 5) Manifest / 诊断能力
 - `tools/list` 返回工具列表，每项包含 `_meta`：
   - `layer/category/safety/idempotent/supportsDryRun`
-- `get_tool_manifest` 返回完整 manifest（含 schema/examples）。
+- `get_tool_manifest` 返回工具 manifest（含 `inputSchema/outputSchema/requiredCapabilities`）。
 - `get_trace_by_id` 返回最近调用轨迹（traceId、耗时、成功状态、错误码等）。
+- `get_capability_matrix` 返回当前 Editor 能力矩阵（official/extended/experimental）。
 
 ### 6) SSE 约束
 - 仅 `ready` 会话允许建立 SSE。
@@ -68,6 +69,7 @@
 - notification 不期待响应；request 在上游错误时生成 JSON-RPC `error` 回包。
 
 ## 设计说明
-- 插件现定位为“规范 MCP server + 兼容本地 Cocos 工具执行器”。
-- 工具业务逻辑应保持稳定，协议层负责标准化校验、会话和错误语义。
+- 插件现定位为“规范 MCP server + Next 能力门控工具层”。
+- `source/mcp-server.ts` 负责传输与会话，工具请求由 `source/next/protocol/router.ts` 统一分发。
+- 工具业务逻辑由 `source/next/tools/*` 负责，协议层仅负责标准化校验、会话和错误语义。
 - 如需未来支持更多 MCP 能力（resources/prompts 等），应在 `source/mcp/*` 层扩展，不要把协议逻辑回灌进工具模块。

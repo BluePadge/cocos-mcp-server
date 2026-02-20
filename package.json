@@ -10,7 +10,7 @@
         "build": "tsc",
         "watch": "tsc -w",
         "mcp:stdio": "node ./dist/stdio-http-bridge.js",
-        "test:mcp": "node ./dist/test/mcp-protocol-compliance-test.js && node ./dist/test/mcp-streamable-http-test.js && node ./dist/test/mcp-stdio-bridge-test.js && node ./dist/test/mcp-v2-manifest-test.js && node ./dist/test/mcp-v2-workflow-test.js"
+        "test:mcp": "node ./dist/test/mcp-protocol-compliance-test.js && node ./dist/test/mcp-streamable-http-test.js && node ./dist/test/mcp-stdio-bridge-test.js && node ./dist/test/mcp-v2-manifest-test.js && node ./dist/test/mcp-v2-workflow-test.js && node ./dist/test/next-capability-probe-test.js && node ./dist/test/next-router-test.js"
     },
     "description": "i18n:cocos-mcp-server.description",
     "main": "./dist/main.js",
@@ -20,7 +20,7 @@
         "vue": "^3.1.4"
     },
     "devDependencies": {
-        "@cocos/creator-types": "^3.8.6",
+        "@cocos/creator-types": "^3.8.7",
         "@types/fs-extra": "^9.0.5",
         "@types/node": "^18.17.1",
         "@types/uuid": "^9.0.8",
@@ -41,7 +41,7 @@
         }
     },
     "contributions": {
-                "menu": [
+        "menu": [
             {
                 "path": "i18n:menu.extension/Cocos MCP Server",
                 "label": "i18n:cocos-mcp-server.open_panel",
