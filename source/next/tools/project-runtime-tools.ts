@@ -151,14 +151,19 @@ export function createProjectRuntimeTools(requester: EditorRequester): NextToolD
                     }
                 }
             },
-            requiredCapabilities: ['engine.query-info'],
+            requiredCapabilities: ['engine.query-engine-info'],
             run: async (args: any) => {
                 const engineName = toNonEmptyString(args?.engineName);
                 try {
                     const info = engineName
-                        ? await requester('engine', 'query-info', engineName)
-                        : await requester('engine', 'query-info');
-                    return ok({ engineName: engineName || null, info });
+                        ? await requester('engine', 'query-engine-info', engineName)
+                        : await requester('engine', 'query-engine-info');
+                    return ok({
+                        engineName: engineName || null,
+                        // 统一走 query-engine-info，避免触发 query-info 废弃告警
+                        runtime: info,
+                        info
+                    });
                 } catch (error: any) {
                     return fail('查询引擎运行信息失败', normalizeError(error));
                 }

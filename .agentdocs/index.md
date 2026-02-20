@@ -6,7 +6,7 @@
 ## 当前任务文档
 `workflow/260212-mcp-v2-spec-patch.md` - 将调用方 v1 Draft 重写为 MCP-first 的 V2 可实施规格补丁
 `workflow/260212-mcp-v2-implementation.md` - 按 V2 规格进入代码重构实施（协议层、manifest、workflow、测试）
-`workflow/260220-coplay-cocos-mcp-rebuild.md` - 按 coplay 能力目标重写 Cocos MCP（新实现），已推进至第三轮能力域迁移
+`workflow/260220-coplay-cocos-mcp-rebuild.md` - 按 coplay 能力目标重写 Cocos MCP（新实现），已推进至运行控制与测试闭环（阶段 15）能力域迁移
 
 ## 已完成任务文档
 `workflow/done/260212-mcp-spec-compliance-without-tool-logic-change.md` - 在不改工具业务逻辑前提下完成 MCP 协议规范化改造
@@ -25,9 +25,19 @@
 - Next 架构的工具可见性由能力矩阵驱动：先 probe（official/extended/experimental），再暴露工具，默认不直接暴露未探测通过的 experimental 方法。
 - Next 第二轮工具迁移采用按域拆分：`scene-hierarchy`、`component-property`、`asset-dependency`，并以 `official-tools.ts` 统一聚合。
 - Next 第三轮已补齐 `scene-lifecycle` 与 `project-runtime` 能力域，并扩展 `asset-dependency` 的资产管理子能力（移动/解析/重导入/刷新/打开）。
+- Next 阶段 10 已将引擎查询统一到 `engine.query-engine-info`（移除 `engine.query-info` 调用路径），并新增 Prefab 生命周期首批工具域。
+- Next 阶段 11 已新增 Prefab 生命周期第二批工具（实例创建/应用），并对 `apply-prefab` 提供回退调用策略。
+- Next 阶段 12 已新增 Scene View 工具域（`scene_view_*`），覆盖 gizmo、2D/3D、网格、icon-gizmo、视角对齐。
+- Next 阶段 13 已新增 UI 自动化工具域（`ui_create_element`/`ui_set_rect_transform`/`ui_set_text`/`ui_set_layout`），用于对齐 coplay 的 UI workflow 能力。
+- Next 阶段 14 已新增调试与诊断工具域（`diagnostic_*`），覆盖编译状态、项目日志、program/programming 信息查询；`scene.query-performance` 不可用时按能力门控隐藏性能快照工具。
+- Next 阶段 15 已新增运行控制与测试闭环工具域（`runtime_*`），覆盖就绪等待、构建面板打开、软重载、快照、场景脚本执行与单次闭环测试。
 - `source/mcp-server.ts` 已切换为 Next runtime 主入口：`tools/list` / `tools/call` / `get_tool_manifest` / `get_trace_by_id` 均由 Next router 处理（不再走 legacy `V2ToolService`）。
 - MCP 端到端测试已统一为 `nextRuntimeFactory` 注入模式，用于在 Node 环境稳定验证 Next-only 协议链路。
 - 能力探测已处理写探测副作用：`scene.create-node` probe 在成功后会自动回滚删除探测节点，避免污染当前场景。
 - `@cocos/creator-types@3.8.7` 已声明资产依赖查询：`asset-db.query-asset-users` 与 `asset-db.query-asset-dependencies`，可作为官方资产关系能力基线。
 - 升级到 `@cocos/creator-types@3.8.7` 后，`builder.open` 调用需显式传 `panel` 参数（如 `'default'`），否则 TypeScript 编译报参错。
-- HelloWorld 在线实测中，Next 工具可见数已从 `17` 提升到 `36`，新增域工具可正常调用。
+- HelloWorld 在线实测中，Next 工具可见数已从 `17` 提升到 `75`，新增域工具可正常调用（含 `scene_view_*`、`ui_*`、`diagnostic_*` 与 `runtime_*` 能力域）。
+- 工具元信息写操作识别已改为按工具名 token 精确匹配，避免 `settings` 等字段命中 `set` 子串导致 `_meta.safety/idempotent` 误判。
+- 已新增重启脚本 `scripts/restart-cocos-project.sh`，采用 `health(tools>0) + MCP 握手` 双重就绪判定，规避“服务早返回但未可用”的启动误判。
+- Prefab 已知问题：`prefab_apply_instance` 在 3.8.8 实测存在“返回成功但实例关联未建立”的情况（`prefab_get_instance_info` 仍显示非实例），已记录待后续专项修复。
+- 本地自动化联调统一采用“按 `--project` 精确匹配 PID 关闭并重启实例 + MCP 三步握手（`initialize` -> `notifications/initialized` -> `tools/list/tools/call`）”流程；避免使用 `CocosCreator --help`（会拉起新实例）。

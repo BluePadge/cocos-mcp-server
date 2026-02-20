@@ -20,6 +20,15 @@ export const DEFAULT_CAPABILITY_CHECKS: CapabilityCheck[] = [
         description: '查询节点详情'
     },
     {
+        key: 'scene.query-nodes-by-asset-uuid',
+        channel: 'scene',
+        method: 'query-nodes-by-asset-uuid',
+        args: ['__missing_asset_uuid__'],
+        layer: 'official',
+        readonly: true,
+        description: '查询引用指定资源的节点 UUID 列表'
+    },
+    {
         key: 'scene.query-components',
         channel: 'scene',
         method: 'query-components',
@@ -27,6 +36,69 @@ export const DEFAULT_CAPABILITY_CHECKS: CapabilityCheck[] = [
         layer: 'official',
         readonly: true,
         description: '查询可添加组件清单'
+    },
+    {
+        key: 'scene.query-gizmo-tool-name',
+        channel: 'scene',
+        method: 'query-gizmo-tool-name',
+        args: [],
+        layer: 'official',
+        readonly: true,
+        description: '查询 Gizmo 工具'
+    },
+    {
+        key: 'scene.query-gizmo-pivot',
+        channel: 'scene',
+        method: 'query-gizmo-pivot',
+        args: [],
+        layer: 'official',
+        readonly: true,
+        description: '查询 Gizmo Pivot'
+    },
+    {
+        key: 'scene.query-gizmo-coordinate',
+        channel: 'scene',
+        method: 'query-gizmo-coordinate',
+        args: [],
+        layer: 'official',
+        readonly: true,
+        description: '查询 Gizmo 坐标系'
+    },
+    {
+        key: 'scene.query-is2D',
+        channel: 'scene',
+        method: 'query-is2D',
+        args: [],
+        layer: 'official',
+        readonly: true,
+        description: '查询 Scene View 2D 模式'
+    },
+    {
+        key: 'scene.query-is-grid-visible',
+        channel: 'scene',
+        method: 'query-is-grid-visible',
+        args: [],
+        layer: 'official',
+        readonly: true,
+        description: '查询网格显示状态'
+    },
+    {
+        key: 'scene.query-is-icon-gizmo-3d',
+        channel: 'scene',
+        method: 'query-is-icon-gizmo-3d',
+        args: [],
+        layer: 'official',
+        readonly: true,
+        description: '查询 Icon Gizmo 3D 状态'
+    },
+    {
+        key: 'scene.query-icon-gizmo-size',
+        channel: 'scene',
+        method: 'query-icon-gizmo-size',
+        args: [],
+        layer: 'official',
+        readonly: true,
+        description: '查询 Icon Gizmo 大小'
     },
     {
         key: 'scene.create-node',
@@ -92,6 +164,33 @@ export const DEFAULT_CAPABILITY_CHECKS: CapabilityCheck[] = [
         description: '设置属性'
     },
     {
+        key: 'scene.reset-node',
+        channel: 'scene',
+        method: 'reset-node',
+        args: [{ uuid: '__missing_uuid__' }],
+        layer: 'official',
+        readonly: false,
+        description: '重置节点'
+    },
+    {
+        key: 'scene.reset-component',
+        channel: 'scene',
+        method: 'reset-component',
+        args: [{ uuid: '__missing_component_uuid__' }],
+        layer: 'official',
+        readonly: false,
+        description: '重置组件'
+    },
+    {
+        key: 'scene.restore-prefab',
+        channel: 'scene',
+        method: 'restore-prefab',
+        args: [{ uuid: '__missing_uuid__' }],
+        layer: 'official',
+        readonly: false,
+        description: '还原 Prefab'
+    },
+    {
         key: 'scene.open-scene',
         channel: 'scene',
         method: 'open-scene',
@@ -126,6 +225,42 @@ export const DEFAULT_CAPABILITY_CHECKS: CapabilityCheck[] = [
         layer: 'official',
         readonly: true,
         description: '查询场景边界'
+    },
+    {
+        key: 'scene.execute-scene-script',
+        channel: 'scene',
+        method: 'execute-scene-script',
+        args: [{ name: '__mcp_probe__', method: '__mcp_probe__', args: [] }],
+        layer: 'official',
+        readonly: false,
+        description: '执行场景脚本方法'
+    },
+    {
+        key: 'scene.snapshot',
+        channel: 'scene',
+        method: 'snapshot',
+        args: [],
+        layer: 'official',
+        readonly: false,
+        description: '触发场景快照'
+    },
+    {
+        key: 'scene.snapshot-abort',
+        channel: 'scene',
+        method: 'snapshot-abort',
+        args: [],
+        layer: 'official',
+        readonly: false,
+        description: '中止场景快照'
+    },
+    {
+        key: 'scene.soft-reload',
+        channel: 'scene',
+        method: 'soft-reload',
+        args: [],
+        layer: 'official',
+        readonly: false,
+        description: '场景软重载'
     },
     {
         key: 'scene.focus-camera',
@@ -299,15 +434,6 @@ export const DEFAULT_CAPABILITY_CHECKS: CapabilityCheck[] = [
         description: '查询编辑器偏好设置'
     },
     {
-        key: 'engine.query-info',
-        channel: 'engine',
-        method: 'query-info',
-        args: [],
-        layer: 'official',
-        readonly: true,
-        description: '查询引擎运行信息'
-    },
-    {
         key: 'engine.query-engine-info',
         channel: 'engine',
         method: 'query-engine-info',
@@ -317,6 +443,15 @@ export const DEFAULT_CAPABILITY_CHECKS: CapabilityCheck[] = [
         description: '查询引擎详细信息'
     },
     {
+        key: 'builder.open',
+        channel: 'builder',
+        method: 'open',
+        args: ['default'],
+        layer: 'official',
+        readonly: false,
+        description: '打开构建面板'
+    },
+    {
         key: 'builder.query-worker-ready',
         channel: 'builder',
         method: 'query-worker-ready',
@@ -324,6 +459,42 @@ export const DEFAULT_CAPABILITY_CHECKS: CapabilityCheck[] = [
         layer: 'official',
         readonly: true,
         description: '查询构建 worker 就绪状态'
+    },
+    {
+        key: 'information.query-information',
+        channel: 'information',
+        method: 'query-information',
+        args: ['__mcp_probe__'],
+        layer: 'official',
+        readonly: true,
+        description: '查询 information 信息项'
+    },
+    {
+        key: 'program.query-program-info',
+        channel: 'program',
+        method: 'query-program-info',
+        args: ['__mcp_probe__'],
+        layer: 'official',
+        readonly: true,
+        description: '查询 program 信息'
+    },
+    {
+        key: 'programming.query-shared-settings',
+        channel: 'programming',
+        method: 'query-shared-settings',
+        args: [],
+        layer: 'official',
+        readonly: true,
+        description: '查询 programming 共享设置'
+    },
+    {
+        key: 'programming.query-sorted-plugins',
+        channel: 'programming',
+        method: 'query-sorted-plugins',
+        args: [],
+        layer: 'official',
+        readonly: true,
+        description: '查询 programming 插件顺序'
     },
     {
         key: 'scene.query-hierarchy',

@@ -21,6 +21,12 @@
 - [x] 阶段 7：Next runtime 挂接到 `mcp-server` 主入口（next-only）
 - [x] 阶段 8：修复能力探测副作用（create-node probe 回滚）
 - [x] 阶段 9：第三轮能力域迁移（项目/场景生命周期 + 编辑器诊断 + 资产管理补全）
+- [x] 阶段 10：替换废弃引擎 API 并启动 Prefab 生命周期首批迁移
+- [x] 阶段 11：Prefab 生命周期第二批迁移（实例创建/应用）
+- [x] 阶段 12：Scene View/编辑器视图能力迁移（gizmo/2D3D/网格/icon-gizmo/视角对齐）
+- [x] 阶段 13：UI 自动化能力域迁移（create/set-rect/set-text/set-layout）
+- [x] 阶段 14：调试与诊断能力域迁移（编译状态/日志/插件信息/性能快照）
+- [x] 阶段 15：运行控制与测试闭环能力域迁移（就绪等待/脚本执行/软重载/快照）
 
 ## TODO
 - [x] 产出 `backend/coplay-cocos-capability-map.md`
@@ -42,6 +48,33 @@
 - [x] 新增资产管理补全工具（`asset_move_asset` / `asset_query_path` / `asset_query_url` / `asset_query_uuid` / `asset_reimport_asset` / `asset_refresh_asset` / `asset_open_asset`）
 - [x] 扩展能力目录 `method-catalog`，覆盖第三轮工具所需官方方法键
 - [x] 扩展 `next-router-test` 覆盖新增能力域工具调用
+- [x] 将 `engine(query-info)` 替换为 `engine(query-engine-info)`（含能力目录与测试）
+- [x] 新增 Prefab 生命周期首批工具（实例查询、按资产查询实例、还原实例、重置节点/组件）
+- [x] 扩展能力目录以覆盖 Prefab 首批工具所需官方方法键（`query-nodes-by-asset-uuid` / `restore-prefab` / `reset-node` / `reset-component`）
+- [x] 扩展 `next-router-test` 覆盖 Prefab 首批工具调用
+- [x] 新增 Prefab 第二批工具（`prefab_create_instance` / `prefab_apply_instance` / `prefab_apply_instances_by_asset`）
+- [x] 扩展写操作识别（`apply`）以修正工具 idempotent/safety 元信息
+- [x] 扩展 `next-router-test` 覆盖 Prefab 第二批工具调用
+- [x] 新增 Scene View 工具域（`scene_view_*`）并接入 `official-tools.ts`
+- [x] 扩展能力目录覆盖 Scene View 查询方法（只读 probe，避免启动副作用）
+- [x] 扩展写操作识别（`change`/`close`/`focus`/`align`）修正 `_meta.idempotent/safety`
+- [x] 扩展 `next-router-test` 覆盖 Scene View 工具调用
+- [x] 沉淀本地“重启 Cocos 实例 + MCP 在线冒烟”标准流程
+- [x] 新增 UI 自动化工具域（`ui_create_element` / `ui_set_rect_transform` / `ui_set_text` / `ui_set_layout`）
+- [x] `official-tools.ts` 接入 UI 自动化工具聚合
+- [x] 扩展 `next-router-test` 覆盖 UI 自动化工具调用
+- [x] 在线冒烟验证 UI 自动化工具域可见性与基础调用
+- [x] 新增调试与诊断工具域（`diagnostic_*`：编译状态/日志/插件/程序信息）
+- [x] `official-tools.ts` 接入调试与诊断工具聚合
+- [x] 扩展能力目录覆盖调试域官方方法键（`information/program/programming`）
+- [x] 新增独立测试 `next-diagnostic-tools-test` 并接入 `test:mcp`
+- [x] 修复工具元信息写操作识别误判（`settings` 不再误判为 `set`）
+- [x] 在线冒烟验证诊断工具域可见性与基础调用
+- [x] 新增运行控制与测试闭环工具域（`runtime_*`）
+- [x] 扩展能力目录覆盖运行控制域官方方法键（`builder.open` / `scene.execute-scene-script` / `scene.soft-reload` / `scene.snapshot` / `scene.snapshot-abort`）
+- [x] 新增独立测试 `next-runtime-control-tools-test` 并接入 `test:mcp`
+- [x] 新增脚本 `scripts/restart-cocos-project.sh`，修复实例重启后“tools=0 误判就绪”问题
+- [x] 在线冒烟验证运行控制与测试闭环工具可见性与调用
 - [x] `npm run build`
 - [x] `npm run test:mcp`
 
@@ -50,6 +83,34 @@
 - 可通过统一入口获取“当前编辑器能力矩阵”，并据此决定工具可见性。
 - 至少有一组官方 API 工具在测试中可验证执行链路。
 - 现有主流程无回归：`build + test:mcp` 全通过。
+
+## 本地联调流程（重启实例 + MCP 冒烟）
+1. 约定路径变量：
+   - `COCOS_APP=/Applications/Cocos/Creator/3.8.8/CocosCreator.app/Contents/MacOS/CocosCreator`
+   - `PROJECT_PATH=/Users/blue/Developer/CocosProjects/HelloWorld`
+2. 定位该工程实例 PID：
+   - `pgrep -af \"CocosCreator.*--project ${PROJECT_PATH}\"`
+3. 关闭该工程实例（仅关闭目标工程，不误杀其它 Cocos 项目）：
+   - `pkill -TERM -f \"CocosCreator.*--project ${PROJECT_PATH}\"`
+   - 循环等待退出；若超时，再执行：`pkill -KILL -f \"CocosCreator.*--project ${PROJECT_PATH}\"`
+4. 启动目标工程实例：
+   - `\"${COCOS_APP}\" --project \"${PROJECT_PATH}\" --can-show-upgrade-dialog true >/tmp/cocos-helloworld.log 2>&1 &`
+   - 或直接使用脚本：`scripts/restart-cocos-project.sh --project \"${PROJECT_PATH}\"`
+5. 等待 MCP 插件就绪：
+   - 轮询 `curl -sS http://127.0.0.1:3000/health`
+   - 判定条件：HTTP 成功且返回 `{\"status\":\"ok\",\"tools\":N}` 且 `N>0`（避免 `tools=0` 的早期误判）。
+6. 执行标准 MCP 握手：
+   - `initialize`（读取响应头 `MCP-Session-Id`）
+   - `notifications/initialized`
+7. 执行在线冒烟：
+   - `tools/list`：检查新工具是否出现（例如 `scene_view_*`）
+   - `tools/call`：至少覆盖一个读工具 + 一个写工具 + 一个回读校验（例如 `scene_view_set_mode` 后 `scene_view_query_state`）
+8. 记录结果：
+   - 记录 `tools` 数量、关键工具可见性、调用响应与异常信息。
+
+> 注意：
+> - `CocosCreator --help` 在 3.8.8 下不会输出参数帮助，反而会启动一个新实例，不要用它做参数探测。
+> - 启动命令以 `--project <path>` 为准，可从现有进程参数中确认。
 
 ## 当前结果
 - 已新增文档：`backend/coplay-cocos-capability-map.md`，明确 coplay 能力域映射与分层策略。
@@ -66,6 +127,8 @@
 - 已新增测试：
   - `source/test/next-capability-probe-test.ts`
   - `source/test/next-router-test.ts`
+  - `source/test/next-diagnostic-tools-test.ts`
+  - `source/test/next-runtime-control-tools-test.ts`
 - 第二轮新增覆盖点：
   - 读域：场景层级读取、节点详情、节点组件查询、资产依赖/引用查询
   - 写域：节点创建/复制/删除/父子调整、组件增删、组件属性写入
@@ -74,6 +137,30 @@
   - 场景生命周期：场景打开/保存/关闭、场景状态查询、相机聚焦
   - 项目运行诊断：项目配置、偏好配置、网络信息、引擎信息、构建 worker 状态
   - 资产管理补全：移动（含重命名）、URL/UUID/路径解析、重导入、刷新、打开
+- 阶段 10 新增覆盖点：
+  - 引擎 API 收敛：`engine_query_runtime_info` 统一改走 `query-engine-info`，避免 `query-info` 废弃告警
+  - Prefab 首批：`prefab_query_nodes_by_asset_uuid`、`prefab_get_instance_info`、`prefab_restore_instance`、`prefab_restore_instances_by_asset`、`prefab_reset_node`、`prefab_reset_component`
+- 阶段 11 新增覆盖点：
+  - Prefab 第二批：`prefab_create_instance`、`prefab_apply_instance`、`prefab_apply_instances_by_asset`
+  - 为兼容编辑器差异，`prefab_apply_instance` 内置 `apply-prefab -> apply-prefab-link` 回退
+- 阶段 12 新增覆盖点：
+  - Scene View：`scene_view_query_state`、`scene_view_set_mode`、`scene_view_set_gizmo_tool`、`scene_view_set_gizmo_pivot`、`scene_view_set_gizmo_coordinate`
+  - Scene View：`scene_view_set_grid_visible`、`scene_view_set_icon_gizmo_visible`、`scene_view_set_icon_gizmo_size`、`scene_view_align_with_view`、`scene_view_align_view_with_node`
+  - 工具元信息写操作识别补强：新增 `change/close/focus/align` 关键词，避免将写工具误标为 `safe + idempotent`
+- 阶段 13 新增覆盖点：
+  - UI 自动化：`ui_create_element`、`ui_set_rect_transform`、`ui_set_text`、`ui_set_layout`
+  - `ui_create_element` 支持 `parentUuid/parentPath` 双定位，未指定父节点时可自动挂载/创建 Canvas
+  - UI 工具内部复用官方 `scene.create-node/query-node-tree/query-node/create-component/set-property` 组合实现，保持官方 API 基线
+- 阶段 14 新增覆盖点：
+  - 调试与诊断：`diagnostic_check_compile_status`、`diagnostic_get_project_logs`、`diagnostic_get_log_file_info`、`diagnostic_search_project_logs`
+  - 调试与诊断：`diagnostic_query_information`、`diagnostic_query_program_info`、`diagnostic_query_shared_settings`、`diagnostic_query_sorted_plugins`
+  - 性能快照：`diagnostic_query_performance_snapshot`（受 `scene.query-performance` 能力门控，缺失时不暴露）
+  - 元信息识别修正：`source/next/protocol/tool-registry.ts` 改为按 `_` token 匹配写操作关键词，避免 `settings` 被误判为 `set`
+- 阶段 15 新增覆盖点：
+  - 运行控制：`runtime_query_control_state`、`runtime_wait_until_ready`、`runtime_open_builder_panel`
+  - 执行与闭环：`runtime_soft_reload_scene`、`runtime_take_scene_snapshot`、`runtime_abort_scene_snapshot`、`runtime_execute_scene_script`、`runtime_execute_test_cycle`
+  - 闭环工具支持“等待就绪 -> 可选脚本 -> 状态回读”单次测试流程，适配自动化迭代调试
+  - 启动脚本：新增 `scripts/restart-cocos-project.sh`，内置 `health(tools>0) + MCP 握手` 双重就绪判定
 - 主入口挂接结果：
   - `source/mcp-server.ts` 已不再依赖 `V2ToolService` 处理工具请求，改为 Next router 统一分发
   - `source/mcp-server.ts` 通过 `nextRuntimeFactory` 支持测试注入与生产默认 runtime
@@ -84,8 +171,32 @@
   - `source/next/capability/method-catalog.ts` 探测节点名改为 `__mcp_probe_node__`
   - 现场验证（HelloWorld）两次新会话探测后均未出现 `__mcp_probe_node__`
 - 在线验证（HelloWorld）：
-  - 重启 Cocos 后 `GET /health` 显示工具数从 `17` 提升到 `36`
+  - 重启 Cocos 后 `GET /health` 显示工具数从 `17` 提升到 `59`
   - 新增工具在线调用成功：`scene_query_status`、`project_query_config`、`server_query_network`、`engine_query_runtime_info`、`asset_query_url`
+  - Prefab 首批工具在线可见并可调用：`prefab_query_nodes_by_asset_uuid`、`prefab_restore_instance`、`prefab_reset_node`
+  - Prefab 第二批工具在线可见并可调用：`prefab_create_instance`、`prefab_apply_instance`、`prefab_apply_instances_by_asset`
+- 在线验证补充（Scene View 批次）：
+  - 已按“本地联调流程”重启 HelloWorld 实例，`tools/list` 显示总数 `55`，`scene_view_*` 共 `10` 个工具全部可见
+  - 在线调用通过：`scene_view_query_state`、`scene_view_set_mode`、`scene_view_set_grid_visible`、`scene_view_set_gizmo_tool`、`scene_view_align_with_view`、`scene_view_align_view_with_node`
+  - `scene_view_query_state` 回读示例：`is2D=true`、`gizmoTool=position`、`isGridVisible=true`、`isIconGizmo3D=false`、`iconGizmoSize=2`
+  - 工具元信息校验通过：`scene_close_scene` 已显示 `_meta.safety=cautious`、`_meta.idempotent=false`（写操作识别修正生效）
+- 在线验证补充（UI 自动化批次）：
+  - 重启后 `tools/list` 显示 `ui_*` 工具共 `4` 个：`ui_create_element`、`ui_set_rect_transform`、`ui_set_text`、`ui_set_layout`
+  - 在线调用通过：创建 Label 节点、设置文本、设置 UITransform、创建 Layout 节点并设置布局参数
+  - 冒烟后已调用 `scene_delete_game_object` 清理探测节点，避免污染场景
+- 在线验证补充（调试与诊断批次）：
+  - 重启后 `GET /health` 显示工具数 `67`
+  - `tools/list` 可见 `diagnostic_*` 工具 `8` 个；`diagnostic_query_performance_snapshot` 因目标实例未暴露 `scene.query-performance` 而未显示（符合能力门控预期）
+  - 在线调用通过：`diagnostic_check_compile_status`（含 `project.log` 摘要）、`diagnostic_get_project_logs`、`diagnostic_search_project_logs`
+  - 元信息校验通过：`diagnostic_query_shared_settings` 已显示 `_meta.safety=safe`、`_meta.idempotent=true`（写操作识别误判已修复）
+- 在线验证补充（运行控制与闭环批次）：
+  - 使用 `scripts/restart-cocos-project.sh --project /Users/blue/Developer/CocosProjects/HelloWorld` 可稳定重启并就绪（避免 `tools=0` 误判）
+  - 重启后 `GET /health` 显示工具数 `75`
+  - `tools/list` 可见 `runtime_*` 工具 `8` 个
+  - 在线调用通过：`runtime_query_control_state`、`runtime_execute_test_cycle`
+- 已知问题（待后续修复）：
+  - 在 HelloWorld + Cocos 3.8.8 实测中，`prefab_apply_instance` 返回成功后，`prefab_get_instance_info` 仍可能显示 `isPrefabInstance=false/prefabAssetUuid=null`
+  - 同步观测 `prefab_query_nodes_by_asset_uuid` 未包含新建实例，疑似 `apply-prefab` 调用成功但未建立实例关联，需后续针对 Prefab API 语义做专项修复
 - 验证结果：
   - `npm run build` 通过
   - `npm run test:mcp` 通过（含新增 next 测试）

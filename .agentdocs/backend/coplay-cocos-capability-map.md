@@ -18,9 +18,9 @@
 
 ### 1) 项目/会话生命周期
 - coplay 参考：`list_unity_project_roots`、`set_unity_project_root`、`open_scene`、`play_game`、`stop_game`
-- Cocos 对应：`project.query-config`、`scene.open-scene/save-scene/close-scene`
+- Cocos 对应：`project.query-config`、`scene.open-scene/save-scene/close-scene`、`runtime_wait_until_ready`、`runtime_execute_test_cycle`
 - 分层建议：`official`
-- 备注：Cocos 无“多项目根扫描”官方等价物，需定义“当前打开项目”单实例模型。
+- 备注：Cocos 无“多项目根扫描”官方等价物，需定义“当前打开项目”单实例模型；`play_game/stop_game` 在官方 message 层无稳定等价，当前以“运行状态检测 + 脚本执行 + 闭环验证”替代。
 
 ### 2) 场景与节点原语
 - coplay 参考：`list_game_objects_in_hierarchy`、`get_game_object_info`、`create/duplicate/delete/parent`
@@ -54,9 +54,13 @@
 
 ### 7) 调试与诊断
 - coplay 参考：`check_compile_errors`、`get_unity_logs`、`get_worst_cpu_frames`
-- Cocos 对应：`debug_*` + `run-native-api-self-test` + trace
-- 分层建议：`extended`
-- 备注：性能指标接口在 Cocos 编辑态可用性不稳定，默认降级为“可用则返回，不可用给出 skipped”。
+- Cocos 对应：
+  - `diagnostic_check_compile_status`（`builder.query-worker-ready` + 日志摘要）
+  - `diagnostic_get_project_logs` / `diagnostic_search_project_logs` / `diagnostic_get_log_file_info`（项目日志扩展能力）
+  - `diagnostic_query_information` / `diagnostic_query_program_info` / `diagnostic_query_shared_settings` / `diagnostic_query_sorted_plugins`（官方声明 API）
+  - `diagnostic_query_performance_snapshot`（依赖 `scene.query-performance`，受能力门控）
+- 分层建议：`official + extended`
+- 备注：性能指标接口在 Cocos 编辑态可用性不稳定，默认由能力矩阵决定是否暴露；日志读取属于扩展能力，需允许路径不可用时返回明确错误。
 
 ### 8) UI 自动化
 - coplay 参考：`create_ui_element`、`set_rect_transform`、`set_ui_text`

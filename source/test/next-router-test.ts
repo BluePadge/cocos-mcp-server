@@ -238,9 +238,6 @@ async function testLifecycleAndRuntimeTools(): Promise<void> {
         if (channel === 'server' && method === 'query-port') {
             return 7456;
         }
-        if (channel === 'engine' && method === 'query-info') {
-            return { version: '3.8.8', path: '/engine', nativeVersion: 'builtin', nativePath: '/native', editor: '3.8.8' };
-        }
         if (channel === 'engine' && method === 'query-engine-info') {
             return { version: '3.8.8', modules: [] };
         }
@@ -262,7 +259,6 @@ async function testLifecycleAndRuntimeTools(): Promise<void> {
         'preferences.query-config',
         'server.query-ip-list',
         'server.query-port',
-        'engine.query-info',
         'engine.query-engine-info',
         'builder.query-worker-ready'
     ]);
@@ -449,6 +445,435 @@ async function testLifecycleAndRuntimeTools(): Promise<void> {
     );
 }
 
+async function testSceneViewTools(): Promise<void> {
+    const state = {
+        is2D: false,
+        gizmoTool: 'move',
+        gizmoPivot: 'center',
+        gizmoCoordinate: 'local',
+        isGridVisible: true,
+        isIconGizmo3D: true,
+        iconGizmoSize: 1
+    };
+    const alignCalls: string[] = [];
+
+    const requester = async (channel: string, method: string, ...args: any[]): Promise<any> => {
+        if (channel !== 'scene') {
+            throw new Error(`Unexpected channel: ${channel}`);
+        }
+
+        if (method === 'query-is2D') {
+            return state.is2D;
+        }
+        if (method === 'query-gizmo-tool-name') {
+            return state.gizmoTool;
+        }
+        if (method === 'query-gizmo-pivot') {
+            return state.gizmoPivot;
+        }
+        if (method === 'query-gizmo-coordinate') {
+            return state.gizmoCoordinate;
+        }
+        if (method === 'query-is-grid-visible') {
+            return state.isGridVisible;
+        }
+        if (method === 'query-is-icon-gizmo-3d') {
+            return state.isIconGizmo3D;
+        }
+        if (method === 'query-icon-gizmo-size') {
+            return state.iconGizmoSize;
+        }
+        if (method === 'query-is-ready') {
+            return true;
+        }
+        if (method === 'change-is2D') {
+            state.is2D = Boolean(args[0]);
+            return undefined;
+        }
+        if (method === 'change-gizmo-tool') {
+            state.gizmoTool = args[0];
+            return undefined;
+        }
+        if (method === 'change-gizmo-pivot') {
+            state.gizmoPivot = args[0];
+            return undefined;
+        }
+        if (method === 'change-gizmo-coordinate') {
+            state.gizmoCoordinate = args[0];
+            return undefined;
+        }
+        if (method === 'set-grid-visible') {
+            state.isGridVisible = Boolean(args[0]);
+            return undefined;
+        }
+        if (method === 'set-icon-gizmo-3d') {
+            state.isIconGizmo3D = Boolean(args[0]);
+            return undefined;
+        }
+        if (method === 'set-icon-gizmo-size') {
+            state.iconGizmoSize = Number(args[0]);
+            return undefined;
+        }
+        if (method === 'align-with-view' || method === 'align-view-with-node') {
+            alignCalls.push(method);
+            return undefined;
+        }
+
+        throw new Error(`Unexpected scene method: ${method}`);
+    };
+
+    const tools = createOfficialTools(requester);
+    const matrix = createMatrix([
+        'scene.query-is2D',
+        'scene.query-gizmo-tool-name',
+        'scene.query-gizmo-pivot',
+        'scene.query-gizmo-coordinate',
+        'scene.query-is-grid-visible',
+        'scene.query-is-icon-gizmo-3d',
+        'scene.query-icon-gizmo-size',
+        'scene.query-is-ready'
+    ]);
+    const registry = new NextToolRegistry(tools, matrix);
+    const router = new NextMcpRouter(registry);
+
+    const listResponse = await router.handle({
+        jsonrpc: '2.0',
+        id: 22,
+        method: 'tools/list'
+    });
+    assert.ok(listResponse);
+    const toolNames = listResponse!.result.tools.map((item: any) => item.name);
+    assert.ok(toolNames.includes('scene_view_query_state'));
+    assert.ok(toolNames.includes('scene_view_set_mode'));
+    assert.ok(toolNames.includes('scene_view_set_gizmo_tool'));
+    assert.ok(toolNames.includes('scene_view_set_gizmo_pivot'));
+    assert.ok(toolNames.includes('scene_view_set_gizmo_coordinate'));
+    assert.ok(toolNames.includes('scene_view_set_grid_visible'));
+    assert.ok(toolNames.includes('scene_view_set_icon_gizmo_visible'));
+    assert.ok(toolNames.includes('scene_view_set_icon_gizmo_size'));
+    assert.ok(toolNames.includes('scene_view_align_with_view'));
+    assert.ok(toolNames.includes('scene_view_align_view_with_node'));
+
+    const queryState = await router.handle({
+        jsonrpc: '2.0',
+        id: 23,
+        method: 'tools/call',
+        params: {
+            name: 'scene_view_query_state',
+            arguments: {}
+        }
+    });
+    assert.ok(queryState);
+    assert.strictEqual(queryState!.result.isError, false);
+    assert.strictEqual(queryState!.result.structuredContent.data.state.is2D, false);
+    assert.strictEqual(queryState!.result.structuredContent.data.state.gizmoTool, 'move');
+
+    const setMode = await router.handle({
+        jsonrpc: '2.0',
+        id: 24,
+        method: 'tools/call',
+        params: {
+            name: 'scene_view_set_mode',
+            arguments: {
+                is2D: true
+            }
+        }
+    });
+    assert.ok(setMode);
+    assert.strictEqual(setMode!.result.isError, false);
+    assert.strictEqual(setMode!.result.structuredContent.data.current, true);
+
+    const setTool = await router.handle({
+        jsonrpc: '2.0',
+        id: 25,
+        method: 'tools/call',
+        params: {
+            name: 'scene_view_set_gizmo_tool',
+            arguments: {
+                tool: 'rotate'
+            }
+        }
+    });
+    assert.ok(setTool);
+    assert.strictEqual(setTool!.result.isError, false);
+    assert.strictEqual(setTool!.result.structuredContent.data.current, 'rotate');
+
+    const setGrid = await router.handle({
+        jsonrpc: '2.0',
+        id: 26,
+        method: 'tools/call',
+        params: {
+            name: 'scene_view_set_grid_visible',
+            arguments: {
+                visible: false
+            }
+        }
+    });
+    assert.ok(setGrid);
+    assert.strictEqual(setGrid!.result.isError, false);
+    assert.strictEqual(setGrid!.result.structuredContent.data.current, false);
+
+    const setIconSize = await router.handle({
+        jsonrpc: '2.0',
+        id: 27,
+        method: 'tools/call',
+        params: {
+            name: 'scene_view_set_icon_gizmo_size',
+            arguments: {
+                size: 2
+            }
+        }
+    });
+    assert.ok(setIconSize);
+    assert.strictEqual(setIconSize!.result.isError, false);
+    assert.strictEqual(setIconSize!.result.structuredContent.data.current, 2);
+
+    const alignWithView = await router.handle({
+        jsonrpc: '2.0',
+        id: 28,
+        method: 'tools/call',
+        params: {
+            name: 'scene_view_align_with_view',
+            arguments: {}
+        }
+    });
+    assert.ok(alignWithView);
+    assert.strictEqual(alignWithView!.result.isError, false);
+
+    const alignViewWithNode = await router.handle({
+        jsonrpc: '2.0',
+        id: 29,
+        method: 'tools/call',
+        params: {
+            name: 'scene_view_align_view_with_node',
+            arguments: {}
+        }
+    });
+    assert.ok(alignViewWithNode);
+    assert.strictEqual(alignViewWithNode!.result.isError, false);
+    assert.deepStrictEqual(alignCalls, ['align-with-view', 'align-view-with-node']);
+}
+
+async function testUiAutomationTools(): Promise<void> {
+    interface MockNode {
+        uuid: string;
+        name: string;
+        parent: string | null;
+        children: string[];
+        components: string[];
+    }
+
+    const nodes = new Map<string, MockNode>();
+    const createdNodeCalls: any[] = [];
+    const createdComponentCalls: any[] = [];
+    const setPropertyCalls: any[] = [];
+    let nodeCounter = 0;
+
+    const ensureNode = (node: MockNode): void => {
+        nodes.set(node.uuid, node);
+    };
+
+    ensureNode({
+        uuid: 'root',
+        name: 'MainScene',
+        parent: null,
+        children: ['canvas-1'],
+        components: []
+    });
+    ensureNode({
+        uuid: 'canvas-1',
+        name: 'Canvas',
+        parent: 'root',
+        children: [],
+        components: ['cc.Canvas', 'cc.UITransform']
+    });
+
+    const createNodeDump = (uuid: string): any => {
+        const node = nodes.get(uuid);
+        if (!node) {
+            throw new Error(`Node not found: ${uuid}`);
+        }
+
+        return {
+            uuid: { value: node.uuid },
+            name: { value: node.name },
+            __comps__: node.components.map((type, index) => ({
+                __type__: { value: type },
+                uuid: { value: `${uuid}-comp-${index}` }
+            }))
+        };
+    };
+
+    const createTreeDump = (uuid: string): any => {
+        const node = nodes.get(uuid);
+        if (!node) {
+            throw new Error(`Tree node not found: ${uuid}`);
+        }
+        return {
+            uuid: { value: node.uuid },
+            name: { value: node.name },
+            children: node.children.map((childUuid) => createTreeDump(childUuid))
+        };
+    };
+
+    const requester = async (channel: string, method: string, ...args: any[]): Promise<any> => {
+        if (channel !== 'scene') {
+            throw new Error(`Unexpected channel: ${channel}`);
+        }
+
+        if (method === 'query-node-tree') {
+            return createTreeDump('root');
+        }
+        if (method === 'query-node') {
+            return createNodeDump(args[0]);
+        }
+        if (method === 'create-node') {
+            const options = args[0] || {};
+            createdNodeCalls.push(options);
+
+            nodeCounter += 1;
+            const nodeUuid = `node-ui-${nodeCounter}`;
+            const parentUuid = options.parent || 'root';
+            const parent = nodes.get(parentUuid);
+            if (!parent) {
+                throw new Error(`Parent not found: ${parentUuid}`);
+            }
+
+            const node: MockNode = {
+                uuid: nodeUuid,
+                name: options.name || `Node-${nodeCounter}`,
+                parent: parentUuid,
+                children: [],
+                components: []
+            };
+            nodes.set(nodeUuid, node);
+            parent.children.push(nodeUuid);
+            return nodeUuid;
+        }
+        if (method === 'create-component') {
+            const payload = args[0];
+            createdComponentCalls.push(payload);
+
+            const node = nodes.get(payload.uuid);
+            if (!node) {
+                throw new Error(`Create component target not found: ${payload.uuid}`);
+            }
+            if (!node.components.includes(payload.component)) {
+                node.components.push(payload.component);
+            }
+            return undefined;
+        }
+        if (method === 'set-property') {
+            setPropertyCalls.push(args[0]);
+            return true;
+        }
+
+        throw new Error(`Unexpected scene method: ${method}`);
+    };
+
+    const tools = createOfficialTools(requester);
+    const matrix = createMatrix([
+        'scene.query-node-tree',
+        'scene.query-node',
+        'scene.create-node',
+        'scene.create-component',
+        'scene.set-property'
+    ]);
+    const registry = new NextToolRegistry(tools, matrix);
+    const router = new NextMcpRouter(registry);
+
+    const listResponse = await router.handle({
+        jsonrpc: '2.0',
+        id: 300,
+        method: 'tools/list'
+    });
+    assert.ok(listResponse);
+    const toolNames = listResponse!.result.tools.map((item: any) => item.name);
+    assert.ok(toolNames.includes('ui_create_element'));
+    assert.ok(toolNames.includes('ui_set_rect_transform'));
+    assert.ok(toolNames.includes('ui_set_text'));
+    assert.ok(toolNames.includes('ui_set_layout'));
+
+    const createElement = await router.handle({
+        jsonrpc: '2.0',
+        id: 301,
+        method: 'tools/call',
+        params: {
+            name: 'ui_create_element',
+            arguments: {
+                elementType: 'Label',
+                elementName: 'Title',
+                parentPath: 'Canvas'
+            }
+        }
+    });
+    assert.ok(createElement);
+    assert.strictEqual(createElement!.result.isError, false);
+    const createdNodeUuid = createElement!.result.structuredContent.data.nodeUuid as string;
+    assert.strictEqual(createdNodeCalls.length, 1);
+    assert.strictEqual(createdNodeCalls[0].parent, 'canvas-1');
+    assert.strictEqual(createdNodeCalls[0].name, 'Title');
+    assert.ok(createElement!.result.structuredContent.data.ensuredComponents.includes('cc.UITransform'));
+    assert.ok(createElement!.result.structuredContent.data.ensuredComponents.includes('cc.Label'));
+
+    const setRect = await router.handle({
+        jsonrpc: '2.0',
+        id: 302,
+        method: 'tools/call',
+        params: {
+            name: 'ui_set_rect_transform',
+            arguments: {
+                nodeUuid: createdNodeUuid,
+                size: { width: 320, height: 80 },
+                anchor: { x: 0.5, y: 0.5 },
+                position: { x: 10, y: 20, z: 0 }
+            }
+        }
+    });
+    assert.ok(setRect);
+    assert.strictEqual(setRect!.result.isError, false);
+
+    const setText = await router.handle({
+        jsonrpc: '2.0',
+        id: 303,
+        method: 'tools/call',
+        params: {
+            name: 'ui_set_text',
+            arguments: {
+                nodeUuid: createdNodeUuid,
+                text: 'Hello UI',
+                fontSize: 32,
+                horizontalAlign: 'center'
+            }
+        }
+    });
+    assert.ok(setText);
+    assert.strictEqual(setText!.result.isError, false);
+
+    const setLayout = await router.handle({
+        jsonrpc: '2.0',
+        id: 304,
+        method: 'tools/call',
+        params: {
+            name: 'ui_set_layout',
+            arguments: {
+                nodePath: 'Canvas',
+                layoutType: 'vertical',
+                spacing: '8,10',
+                padding: '12,12,8,8'
+            }
+        }
+    });
+    assert.ok(setLayout);
+    assert.strictEqual(setLayout!.result.isError, false);
+
+    assert.ok(createdComponentCalls.some((item) => item.component === 'cc.Label'));
+    assert.ok(setPropertyCalls.some((item) => item.path.includes('contentSize')));
+    assert.ok(setPropertyCalls.some((item) => item.path.includes('.string')));
+    assert.ok(setPropertyCalls.some((item) => item.path.includes('.type')));
+    assert.ok(setPropertyCalls.some((item) => item.path.includes('paddingLeft')));
+}
+
 async function testAssetManagementTools(): Promise<void> {
     const requester = async (channel: string, method: string, ...args: any[]): Promise<any> => {
         if (channel !== 'asset-db') {
@@ -596,6 +1021,224 @@ async function testAssetManagementTools(): Promise<void> {
     assert.strictEqual(open!.result.isError, false);
 }
 
+async function testPrefabLifecycleTools(): Promise<void> {
+    const restoreCalls: string[] = [];
+    const resetNodeCalls: any[] = [];
+    const resetComponentCalls: any[] = [];
+    const createNodeCalls: any[] = [];
+    const applyCalls: any[] = [];
+
+    const requester = async (channel: string, method: string, ...args: any[]): Promise<any> => {
+        if (channel !== 'scene') {
+            throw new Error(`Unexpected channel: ${channel}`);
+        }
+
+        if (method === 'query-nodes-by-asset-uuid') {
+            return ['node-prefab-1', 'node-prefab-2'];
+        }
+        if (method === 'create-node') {
+            createNodeCalls.push(args[0]);
+            return 'node-created-from-prefab';
+        }
+        if (method === 'query-node') {
+            return {
+                name: { value: 'PlayerRoot' },
+                prefab: {
+                    state: 1,
+                    assetUuid: { value: 'asset-prefab-1' }
+                }
+            };
+        }
+        if (method === 'apply-prefab') {
+            applyCalls.push(args[0]);
+            return true;
+        }
+        if (method === 'restore-prefab') {
+            restoreCalls.push(args[0].uuid);
+            return true;
+        }
+        if (method === 'reset-node') {
+            resetNodeCalls.push(args[0]);
+            return true;
+        }
+        if (method === 'reset-component') {
+            resetComponentCalls.push(args[0]);
+            return true;
+        }
+
+        throw new Error(`Unexpected scene method: ${method}`);
+    };
+
+    const tools = createOfficialTools(requester);
+    const matrix = createMatrix([
+        'scene.create-node',
+        'scene.query-nodes-by-asset-uuid',
+        'scene.query-node',
+        'scene.apply-prefab',
+        'scene.restore-prefab',
+        'scene.reset-node',
+        'scene.reset-component'
+    ]);
+    const registry = new NextToolRegistry(tools, matrix);
+    const router = new NextMcpRouter(registry);
+
+    const listResponse = await router.handle({
+        jsonrpc: '2.0',
+        id: 40,
+        method: 'tools/list'
+    });
+    assert.ok(listResponse);
+    const toolNames = listResponse!.result.tools.map((item: any) => item.name);
+    assert.ok(toolNames.includes('prefab_create_instance'));
+    assert.ok(toolNames.includes('prefab_query_nodes_by_asset_uuid'));
+    assert.ok(toolNames.includes('prefab_get_instance_info'));
+    assert.ok(toolNames.includes('prefab_apply_instance'));
+    assert.ok(toolNames.includes('prefab_apply_instances_by_asset'));
+    assert.ok(toolNames.includes('prefab_restore_instance'));
+    assert.ok(toolNames.includes('prefab_restore_instances_by_asset'));
+    assert.ok(toolNames.includes('prefab_reset_node'));
+    assert.ok(toolNames.includes('prefab_reset_component'));
+
+    const createInstance = await router.handle({
+        jsonrpc: '2.0',
+        id: 40,
+        method: 'tools/call',
+        params: {
+            name: 'prefab_create_instance',
+            arguments: {
+                assetUuid: 'asset-prefab-1',
+                parentUuid: 'parent-1'
+            }
+        }
+    });
+    assert.ok(createInstance);
+    assert.strictEqual(createInstance!.result.isError, false);
+    assert.strictEqual(createInstance!.result.structuredContent.data.nodeUuid, 'node-created-from-prefab');
+    assert.strictEqual(createNodeCalls.length, 1);
+
+    const queryNodes = await router.handle({
+        jsonrpc: '2.0',
+        id: 41,
+        method: 'tools/call',
+        params: {
+            name: 'prefab_query_nodes_by_asset_uuid',
+            arguments: {
+                assetUuid: 'asset-prefab-1'
+            }
+        }
+    });
+    assert.ok(queryNodes);
+    assert.strictEqual(queryNodes!.result.isError, false);
+    assert.strictEqual(queryNodes!.result.structuredContent.data.count, 2);
+
+    const instanceInfo = await router.handle({
+        jsonrpc: '2.0',
+        id: 42,
+        method: 'tools/call',
+        params: {
+            name: 'prefab_get_instance_info',
+            arguments: {
+                nodeUuid: 'node-prefab-1'
+            }
+        }
+    });
+    assert.ok(instanceInfo);
+    assert.strictEqual(instanceInfo!.result.isError, false);
+    assert.strictEqual(instanceInfo!.result.structuredContent.data.isPrefabInstance, true);
+    assert.strictEqual(instanceInfo!.result.structuredContent.data.prefabAssetUuid, 'asset-prefab-1');
+
+    const applySingle = await router.handle({
+        jsonrpc: '2.0',
+        id: 425,
+        method: 'tools/call',
+        params: {
+            name: 'prefab_apply_instance',
+            arguments: {
+                nodeUuid: 'node-prefab-1',
+                prefabUuid: 'asset-prefab-1'
+            }
+        }
+    });
+    assert.ok(applySingle);
+    assert.strictEqual(applySingle!.result.isError, false);
+
+    const applyBatch = await router.handle({
+        jsonrpc: '2.0',
+        id: 426,
+        method: 'tools/call',
+        params: {
+            name: 'prefab_apply_instances_by_asset',
+            arguments: {
+                assetUuid: 'asset-prefab-1'
+            }
+        }
+    });
+    assert.ok(applyBatch);
+    assert.strictEqual(applyBatch!.result.isError, false);
+    assert.strictEqual(applyBatch!.result.structuredContent.data.successCount, 2);
+    assert.strictEqual(applyCalls.length, 3);
+
+    const restoreSingle = await router.handle({
+        jsonrpc: '2.0',
+        id: 43,
+        method: 'tools/call',
+        params: {
+            name: 'prefab_restore_instance',
+            arguments: {
+                nodeUuid: 'node-prefab-1'
+            }
+        }
+    });
+    assert.ok(restoreSingle);
+    assert.strictEqual(restoreSingle!.result.isError, false);
+
+    const restoreBatch = await router.handle({
+        jsonrpc: '2.0',
+        id: 44,
+        method: 'tools/call',
+        params: {
+            name: 'prefab_restore_instances_by_asset',
+            arguments: {
+                assetUuid: 'asset-prefab-1'
+            }
+        }
+    });
+    assert.ok(restoreBatch);
+    assert.strictEqual(restoreBatch!.result.isError, false);
+    assert.strictEqual(restoreBatch!.result.structuredContent.data.successCount, 2);
+
+    const resetNode = await router.handle({
+        jsonrpc: '2.0',
+        id: 45,
+        method: 'tools/call',
+        params: {
+            name: 'prefab_reset_node',
+            arguments: {
+                nodeUuids: ['node-prefab-1', 'node-prefab-2']
+            }
+        }
+    });
+    assert.ok(resetNode);
+    assert.strictEqual(resetNode!.result.isError, false);
+    assert.strictEqual(resetNodeCalls.length, 1);
+
+    const resetComponent = await router.handle({
+        jsonrpc: '2.0',
+        id: 46,
+        method: 'tools/call',
+        params: {
+            name: 'prefab_reset_component',
+            arguments: {
+                componentUuid: 'comp-1'
+            }
+        }
+    });
+    assert.ok(resetComponent);
+    assert.strictEqual(resetComponent!.result.isError, false);
+    assert.strictEqual(resetComponentCalls.length, 1);
+    assert.strictEqual(restoreCalls.length, 3);
+}
+
 async function testUnknownTool(): Promise<void> {
     const tools = createOfficialTools(async () => undefined);
     const matrix = createMatrix([]);
@@ -620,7 +1263,10 @@ async function run(): Promise<void> {
     await testListAndReadDomainCalls();
     await testWriteToolCall();
     await testLifecycleAndRuntimeTools();
+    await testSceneViewTools();
+    await testUiAutomationTools();
     await testAssetManagementTools();
+    await testPrefabLifecycleTools();
     await testUnknownTool();
     console.log('next-router-test: PASS');
 }

@@ -95,24 +95,48 @@ export class NextToolRegistry {
     }
 
     private isIdempotent(tool: NextToolDefinition): boolean {
-        const writeKeywords = ['create', 'delete', 'remove', 'copy', 'move', 'set', 'open', 'save', 'add', 'duplicate', 'parent'];
-        return !writeKeywords.some((keyword) => tool.name.includes(keyword));
+        const writeKeywords = this.getWriteKeywords();
+        return !this.hasActionKeyword(tool.name, writeKeywords);
     }
 
     private getSafety(tool: NextToolDefinition): 'safe' | 'cautious' | 'destructive' {
-        if (tool.name.includes('delete') || tool.name.includes('remove')) {
+        if (this.hasActionKeyword(tool.name, ['delete', 'remove'])) {
             return 'destructive';
         }
-        if (tool.name.includes('create')
-            || tool.name.includes('copy')
-            || tool.name.includes('set')
-            || tool.name.includes('open')
-            || tool.name.includes('save')
-            || tool.name.includes('duplicate')
-            || tool.name.includes('parent')
-            || tool.name.includes('add')) {
+        if (this.hasActionKeyword(tool.name, this.getWriteKeywords())) {
             return 'cautious';
         }
         return 'safe';
+    }
+
+    private getWriteKeywords(): string[] {
+        return [
+            'create',
+            'delete',
+            'remove',
+            'copy',
+            'move',
+            'set',
+            'change',
+            'execute',
+            'reload',
+            'snapshot',
+            'open',
+            'save',
+            'close',
+            'add',
+            'duplicate',
+            'parent',
+            'focus',
+            'align',
+            'restore',
+            'reset',
+            'apply'
+        ];
+    }
+
+    private hasActionKeyword(toolName: string, keywords: string[]): boolean {
+        const tokens = toolName.split('_').filter((token) => token !== '');
+        return keywords.some((keyword) => tokens.includes(keyword));
     }
 }
