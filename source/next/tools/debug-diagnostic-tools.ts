@@ -24,6 +24,12 @@ interface LoadedLogContent {
     nonEmptyLines: string[];
 }
 
+interface IncrementalFilterOptions {
+    sinceLine: number | null;
+    sinceTimestamp: string | null;
+    sinceTimestampMs: number | null;
+}
+
 const DEFAULT_LOG_RELATIVE_PATH = path.join('temp', 'logs', 'project.log');
 
 function clampInt(value: any, fallback: number, min: number, max: number): number {
@@ -244,6 +250,82 @@ async function loadProjectLogContent(
     }
 }
 
+function parseIncrementalFilterOptions(args: any): { ok: true; value: IncrementalFilterOptions } | { ok: false; error: string } {
+    const hasSinceLine = args && Object.prototype.hasOwnProperty.call(args, 'sinceLine');
+    let sinceLine: number | null = null;
+    if (hasSinceLine) {
+        const rawSinceLine = Number(args?.sinceLine);
+        if (!Number.isInteger(rawSinceLine) || rawSinceLine < 0) {
+            return { ok: false, error: 'sinceLine 必须是大于等于 0 的整数' };
+        }
+        sinceLine = rawSinceLine;
+    }
+
+    const sinceTimestamp = toNonEmptyString(args?.sinceTimestamp);
+    let sinceTimestampMs: number | null = null;
+    if (sinceTimestamp) {
+        const parsed = Date.parse(sinceTimestamp);
+        if (!Number.isFinite(parsed)) {
+            return { ok: false, error: 'sinceTimestamp 必须是合法时间字符串（建议 ISO8601）' };
+        }
+        sinceTimestampMs = parsed;
+    }
+
+    return {
+        ok: true,
+        value: {
+            sinceLine,
+            sinceTimestamp,
+            sinceTimestampMs
+        }
+    };
+}
+
+function extractLineTimestampMs(line: string): number | null {
+    const isoLikePatterns = [
+        /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?/,
+        /\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?/
+    ];
+
+    for (const pattern of isoLikePatterns) {
+        const matched = line.match(pattern);
+        if (!matched || !matched[0]) {
+            continue;
+        }
+        const normalized = matched[0].includes('T') ? matched[0] : matched[0].replace(' ', 'T');
+        const parsed = Date.parse(normalized);
+        if (Number.isFinite(parsed)) {
+            return parsed;
+        }
+    }
+    return null;
+}
+
+function filterIncrementalLines(rawLines: string[], options: IncrementalFilterOptions): string[] {
+    const result: string[] = [];
+    for (let index = 0; index < rawLines.length; index += 1) {
+        const lineNo = index + 1;
+        const line = rawLines[index] || '';
+        if (line.trim() === '') {
+            continue;
+        }
+
+        if (options.sinceLine !== null && lineNo <= options.sinceLine) {
+            continue;
+        }
+
+        if (options.sinceTimestampMs !== null) {
+            const lineTs = extractLineTimestampMs(line);
+            if (lineTs === null || lineTs <= options.sinceTimestampMs) {
+                continue;
+            }
+        }
+
+        result.push(line);
+    }
+    return result;
+}
+
 function extractLogSummary(lines: string[]): {
     totalLines: number;
     byLevel: Record<string, number>;
@@ -281,6 +363,14 @@ export function createDebugDiagnosticTools(requester: EditorRequester): NextTool
                         type: 'number',
                         description: '日志摘要读取行数，默认 200，范围 1-10000'
                     },
+                    sinceLine: {
+                        type: 'number',
+                        description: '可选，仅统计该行号之后的日志（基于 project.log 原始行号）'
+                    },
+                    sinceTimestamp: {
+                        type: 'string',
+                        description: '可选，仅统计该时间之后的日志（建议 ISO8601）'
+                    },
                     projectPath: {
                         type: 'string',
                         description: '可选，项目根目录；用于定位 temp/logs/project.log'
@@ -295,6 +385,10 @@ export function createDebugDiagnosticTools(requester: EditorRequester): NextTool
             run: async (args: any) => {
                 const includeLogSummary = args?.includeLogSummary !== false;
                 const lines = clampInt(args?.lines, 200, 1, 10000);
+                const incrementalOptions = parseIncrementalFilterOptions(args);
+                if (!incrementalOptions.ok) {
+                    return fail('增量参数不合法', incrementalOptions.error, 'E_INVALID_ARGUMENT');
+                }
 
                 try {
                     const ready = await requester('builder', 'query-worker-ready');
@@ -309,16 +403,23 @@ export function createDebugDiagnosticTools(requester: EditorRequester): NextTool
                             logFilePath: args?.logFilePath
                         });
                         if (loaded.ok) {
-                            const selectedLines = loaded.value.nonEmptyLines.slice(-lines);
+                            const incrementalLines = filterIncrementalLines(loaded.value.rawLines, incrementalOptions.value);
+                            const selectedLines = incrementalLines.slice(-lines);
                             data.logSummary = {
                                 logFilePath: loaded.value.logFilePath,
                                 requestedLines: lines,
+                                sourceLines: incrementalLines.length,
                                 ...extractLogSummary(selectedLines)
                             };
                         } else {
                             data.logSummaryError = loaded.error;
                         }
                     }
+
+                    data.incremental = {
+                        sinceLine: incrementalOptions.value.sinceLine,
+                        sinceTimestamp: incrementalOptions.value.sinceTimestamp
+                    };
 
                     return ok(data);
                 } catch (error: any) {
@@ -347,6 +448,14 @@ export function createDebugDiagnosticTools(requester: EditorRequester): NextTool
                         type: 'string',
                         description: '可选，按关键字过滤（不区分大小写）'
                     },
+                    sinceLine: {
+                        type: 'number',
+                        description: '可选，仅返回该行号之后的日志（基于 project.log 原始行号）'
+                    },
+                    sinceTimestamp: {
+                        type: 'string',
+                        description: '可选，仅返回该时间之后的日志（建议 ISO8601）'
+                    },
                     projectPath: {
                         type: 'string',
                         description: '可选，项目根目录'
@@ -364,6 +473,10 @@ export function createDebugDiagnosticTools(requester: EditorRequester): NextTool
                 if (!logLevel) {
                     return fail('logLevel 仅支持 ALL/ERROR/WARN/INFO/DEBUG/TRACE', undefined, 'E_INVALID_ARGUMENT');
                 }
+                const incrementalOptions = parseIncrementalFilterOptions(args);
+                if (!incrementalOptions.ok) {
+                    return fail('增量参数不合法', incrementalOptions.error, 'E_INVALID_ARGUMENT');
+                }
 
                 const filterKeyword = toNonEmptyString(args?.filterKeyword);
                 const loaded = await loadProjectLogContent(requester, args);
@@ -371,17 +484,23 @@ export function createDebugDiagnosticTools(requester: EditorRequester): NextTool
                     return fail('读取项目日志失败', loaded.error, 'E_LOG_FILE_NOT_FOUND');
                 }
 
-                const selectedLines = loaded.value.nonEmptyLines.slice(-lines);
+                const incrementalLines = filterIncrementalLines(loaded.value.rawLines, incrementalOptions.value);
+                const selectedLines = incrementalLines.slice(-lines);
                 const byLevel = filterLinesByLevel(selectedLines, logLevel);
                 const filtered = filterLinesByKeyword(byLevel, filterKeyword);
 
                 return ok({
                     logFilePath: loaded.value.logFilePath,
                     totalLines: loaded.value.nonEmptyLines.length,
+                    sourceLines: incrementalLines.length,
                     requestedLines: lines,
                     returnedLines: filtered.length,
                     logLevel,
                     filterKeyword,
+                    incremental: {
+                        sinceLine: incrementalOptions.value.sinceLine,
+                        sinceTimestamp: incrementalOptions.value.sinceTimestamp
+                    },
                     logs: filtered
                 });
             }

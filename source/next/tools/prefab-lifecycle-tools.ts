@@ -1,5 +1,14 @@
 import { EditorRequester, NextToolDefinition } from '../models';
-import { fail, normalizeError, ok, readDumpString, toNonEmptyString, toStringList } from './common';
+import {
+    coerceValueByKind,
+    fail,
+    normalizeError,
+    normalizeValueKind,
+    ok,
+    readDumpString,
+    toNonEmptyString,
+    toStringList
+} from './common';
 import { linkPrefabToNodeByMessage, replaceNodeWithPrefabInstance } from './prefab-link-fallback';
 import {
     buildCreateNodeCandidates,
@@ -224,6 +233,65 @@ function normalizePrefabCreateOptions(args: any): Record<string, any> {
     }
 
     return options;
+}
+
+function readNodeUuid(node: any): string | null {
+    return readDumpString(node?.uuid) || readDumpString(node?.id) || null;
+}
+
+function readNodeName(node: any): string | null {
+    return readDumpString(node?.name) || null;
+}
+
+function readNodeChildren(node: any): any[] {
+    return Array.isArray(node?.children) ? node.children : [];
+}
+
+function resolveNodeUuidByPath(tree: any, rawNodePath: string): string | null {
+    const segments = rawNodePath
+        .split('/')
+        .map((item) => item.trim())
+        .filter((item) => item !== '');
+    if (segments.length === 0) {
+        return null;
+    }
+
+    let current = tree;
+    let startIndex = 0;
+    const rootName = readNodeName(current);
+    if (rootName && rootName === segments[0]) {
+        startIndex = 1;
+    }
+
+    if (startIndex === 0) {
+        const first = segments[0];
+        const next = readNodeChildren(current).find((child) => readNodeName(child) === first);
+        if (!next) {
+            return null;
+        }
+        current = next;
+        startIndex = 1;
+    }
+
+    for (let index = startIndex; index < segments.length; index += 1) {
+        const seg = segments[index];
+        const next = readNodeChildren(current).find((child) => readNodeName(child) === seg);
+        if (!next) {
+            return null;
+        }
+        current = next;
+    }
+
+    return readNodeUuid(current);
+}
+
+async function querySceneDirtySafe(requester: EditorRequester): Promise<boolean | null> {
+    try {
+        const dirty = await requester('scene', 'query-dirty');
+        return dirty === true;
+    } catch {
+        return null;
+    }
 }
 
 async function applyPrefabToNode(
@@ -585,6 +653,112 @@ export function createPrefabLifecycleTools(requester: EditorRequester): NextTool
                     });
                 } catch (error: any) {
                     return fail('解除 Prefab 关联失败', normalizeError(error));
+                }
+            }
+        },
+        {
+            name: 'prefab_set_node_property',
+            description: '在 Prefab 编辑上下文中设置节点属性（支持按 nodeUuid 或 nodePath 定位）',
+            layer: 'extended',
+            category: 'prefab',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    assetUuid: { type: 'string', description: '可选，Prefab 资源 UUID（与 assetUrl 二选一）' },
+                    assetUrl: { type: 'string', description: '可选，Prefab 资源 URL（与 assetUuid 二选一）' },
+                    nodeUuid: { type: 'string', description: '可选，目标节点 UUID（与 nodePath 二选一）' },
+                    nodePath: { type: 'string', description: '可选，目标节点路径，例如 MeteorRoot/Sub（与 nodeUuid 二选一）' },
+                    propertyPath: { type: 'string', description: '节点属性路径，例如 _active 或 position.x' },
+                    value: { description: '要写入的属性值' },
+                    valueKind: {
+                        type: 'string',
+                        enum: ['auto', 'boolean', 'number', 'string', 'json'],
+                        description: '可选，值类型转换策略（默认 auto）'
+                    },
+                    valueType: { type: 'string', description: '可选，dump.type（例如 cc.Vec3）' },
+                    record: { type: 'boolean', description: '可选，是否记录 undo' }
+                },
+                required: ['propertyPath']
+            },
+            requiredCapabilities: ['asset-db.open-asset', 'scene.set-property'],
+            run: async (args: any) => {
+                const assetUuid = toNonEmptyString(args?.assetUuid);
+                const assetUrl = toNonEmptyString(args?.assetUrl);
+                const nodeUuid = toNonEmptyString(args?.nodeUuid);
+                const nodePath = toNonEmptyString(args?.nodePath);
+                const propertyPath = toNonEmptyString(args?.propertyPath);
+                if (!assetUuid && !assetUrl) {
+                    return fail('assetUuid 或 assetUrl 至少提供一个', undefined, 'E_INVALID_ARGUMENT');
+                }
+                if (!nodeUuid && !nodePath) {
+                    return fail('nodeUuid 或 nodePath 至少提供一个', undefined, 'E_INVALID_ARGUMENT');
+                }
+                if (!propertyPath) {
+                    return fail('propertyPath 必填', undefined, 'E_INVALID_ARGUMENT');
+                }
+
+                const valueKind = normalizeValueKind(args?.valueKind);
+                if (!valueKind) {
+                    return fail('valueKind 仅支持 auto/boolean/number/string/json', undefined, 'E_INVALID_ARGUMENT');
+                }
+                const coerced = coerceValueByKind(args?.value, valueKind);
+                if (!coerced.ok) {
+                    return fail('属性值类型转换失败', coerced.error, 'E_INVALID_ARGUMENT');
+                }
+
+                const openTarget = assetUrl || assetUuid;
+                try {
+                    await requester('asset-db', 'open-asset', openTarget);
+
+                    let resolvedNodeUuid = nodeUuid;
+                    if (!resolvedNodeUuid && nodePath) {
+                        const tree = await requester('scene', 'query-node-tree');
+                        resolvedNodeUuid = resolveNodeUuidByPath(tree, nodePath) || null;
+                        if (!resolvedNodeUuid) {
+                            return fail(`按 nodePath 未找到目标节点: ${nodePath}`, undefined, 'E_NODE_NOT_FOUND');
+                        }
+                    }
+
+                    if (!resolvedNodeUuid) {
+                        return fail('无法定位目标节点', undefined, 'E_NODE_NOT_FOUND');
+                    }
+
+                    const dump: Record<string, any> = { value: coerced.value };
+                    const valueType = toNonEmptyString(args?.valueType);
+                    if (valueType) {
+                        dump.type = valueType;
+                    }
+
+                    const payload: Record<string, any> = {
+                        uuid: resolvedNodeUuid,
+                        path: propertyPath,
+                        dump
+                    };
+                    if (typeof args?.record === 'boolean') {
+                        payload.record = args.record;
+                    }
+
+                    const dirtyBefore = await querySceneDirtySafe(requester);
+                    const updated = await requester('scene', 'set-property', payload);
+                    const dirtyAfter = await querySceneDirtySafe(requester);
+
+                    return ok({
+                        updated: updated === true,
+                        openTarget,
+                        assetUuid: assetUuid || null,
+                        assetUrl: assetUrl || null,
+                        nodeUuid: resolvedNodeUuid,
+                        nodePath: nodePath || null,
+                        propertyPath,
+                        dump,
+                        valueKind,
+                        appliedType: coerced.appliedType,
+                        dirtyBefore,
+                        dirtyAfter,
+                        dirtyChanged: dirtyBefore !== null && dirtyAfter !== null ? dirtyBefore !== dirtyAfter : null
+                    });
+                } catch (error: any) {
+                    return fail('设置 Prefab 节点属性失败', normalizeError(error));
                 }
             }
         },

@@ -157,6 +157,23 @@ async function testSceneClipboardAndSaveAsTools(): Promise<void> {
 }
 
 async function testComponentAdvancedTools(): Promise<void> {
+    const dirtyStates = [false, false, false, false, false, false, false];
+    let softReloadCalls = 0;
+    let spawnCounter = 0;
+    const rootChildren = ['node-base-1'];
+
+    const toNode = (uuid: string): any => ({
+        uuid: { value: uuid },
+        name: { value: uuid },
+        children: []
+    });
+
+    const toTree = (): any => ({
+        uuid: { value: 'scene-root' },
+        name: { value: 'MainScene' },
+        children: rootChildren.map((uuid) => toNode(uuid))
+    });
+
     const requester = async (channel: string, method: string, ...args: any[]): Promise<any> => {
         if (channel !== 'scene') {
             throw new Error(`Unexpected channel: ${channel}`);
@@ -172,7 +189,35 @@ async function testComponentAdvancedTools(): Promise<void> {
             return args[0] === 'cc.Label';
         }
         if (method === 'execute-component-method') {
+            const payload = args[0] || {};
+            if (payload.name === 'spawnOne') {
+                spawnCounter += 1;
+                rootChildren.push(`node-spawn-${spawnCounter}`);
+            }
             return { success: true, input: args[0] };
+        }
+        if (method === 'query-node-tree') {
+            return toTree();
+        }
+        if (method === 'query-dirty') {
+            if (dirtyStates.length === 0) {
+                return false;
+            }
+            return dirtyStates.shift();
+        }
+        if (method === 'remove-node') {
+            const payload = args[0] || {};
+            const uuid = payload.uuid || payload;
+            const index = rootChildren.findIndex((item) => item === uuid);
+            if (index >= 0) {
+                rootChildren.splice(index, 1);
+                return true;
+            }
+            throw new Error(`node not found: ${String(uuid)}`);
+        }
+        if (method === 'soft-reload') {
+            softReloadCalls += 1;
+            return true;
         }
         if (method === 'move-array-element') {
             return true;
@@ -245,6 +290,51 @@ async function testComponentAdvancedTools(): Promise<void> {
     assert.ok(execute);
     assert.strictEqual(execute!.result.isError, false);
     assert.strictEqual(execute!.result.structuredContent.data.executed, true);
+
+    const executeWithoutRollbackMutation = await router.handle({
+        jsonrpc: '2.0',
+        id: 121,
+        method: 'tools/call',
+        params: {
+            name: 'component_execute_method',
+            arguments: {
+                componentUuid: 'comp-1',
+                methodName: 'spawnOne',
+                args: []
+            }
+        }
+    });
+    assert.ok(executeWithoutRollbackMutation);
+    assert.strictEqual(executeWithoutRollbackMutation!.result.isError, false);
+    assert.strictEqual(executeWithoutRollbackMutation!.result.structuredContent.data.rollbackRequested, false);
+    assert.strictEqual(executeWithoutRollbackMutation!.result.structuredContent.data.sceneMutated, true);
+    assert.strictEqual(executeWithoutRollbackMutation!.result.structuredContent.data.rollbackApplied, false);
+    rootChildren.splice(1);
+
+    const executeWithRollback = await router.handle({
+        jsonrpc: '2.0',
+        id: 120,
+        method: 'tools/call',
+        params: {
+            name: 'component_execute_method',
+            arguments: {
+                componentUuid: 'comp-1',
+                methodName: 'spawnOne',
+                args: [],
+                rollbackAfterCall: true
+            }
+        }
+    });
+    assert.ok(executeWithRollback);
+    assert.strictEqual(executeWithRollback!.result.isError, false);
+    assert.strictEqual(executeWithRollback!.result.structuredContent.data.rollbackRequested, true);
+    assert.strictEqual(executeWithRollback!.result.structuredContent.data.rollbackApplied, true);
+    assert.strictEqual(executeWithRollback!.result.structuredContent.data.rollbackMethod, 'remove-node');
+    assert.strictEqual(executeWithRollback!.result.structuredContent.data.rollbackVerified, true);
+    assert.strictEqual(executeWithRollback!.result.structuredContent.data.sceneMutated, true);
+    assert.strictEqual(executeWithRollback!.result.structuredContent.data.requiresSave, false);
+    assert.strictEqual(softReloadCalls, 0);
+    assert.deepStrictEqual(rootChildren, ['node-base-1']);
 
     const reset = await router.handle({
         jsonrpc: '2.0',

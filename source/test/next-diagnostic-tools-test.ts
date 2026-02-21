@@ -174,6 +174,7 @@ async function testDiagnosticTools(): Promise<void> {
         assert.strictEqual(compileStatus!.result.structuredContent.data.logSummary.byLevel.ERROR, 1);
         assert.strictEqual(compileStatus!.result.structuredContent.data.logSummary.byLevel.WARN, 1);
         assert.strictEqual(String(compileStatus!.result.structuredContent.data.logSummary.logFilePath), logFilePath);
+        assert.strictEqual(compileStatus!.result.structuredContent.data.incremental.sinceLine, null);
 
         const getLogs = await router.handle({
             jsonrpc: '2.0',
@@ -193,6 +194,43 @@ async function testDiagnosticTools(): Promise<void> {
         assert.strictEqual(getLogs!.result.isError, false);
         assert.strictEqual(getLogs!.result.structuredContent.data.returnedLines, 1);
         assert.ok(String(getLogs!.result.structuredContent.data.logs[0]).includes('Compile failed'));
+
+        const compileStatusSinceLine = await router.handle({
+            jsonrpc: '2.0',
+            id: 31,
+            method: 'tools/call',
+            params: {
+                name: 'diagnostic_check_compile_status',
+                arguments: {
+                    includeLogSummary: true,
+                    lines: 50,
+                    sinceLine: 3
+                }
+            }
+        });
+        assert.ok(compileStatusSinceLine);
+        assert.strictEqual(compileStatusSinceLine!.result.isError, false);
+        assert.strictEqual(compileStatusSinceLine!.result.structuredContent.data.logSummary.hasError, false);
+        assert.strictEqual(compileStatusSinceLine!.result.structuredContent.data.logSummary.sourceLines, 2);
+        assert.strictEqual(compileStatusSinceLine!.result.structuredContent.data.incremental.sinceLine, 3);
+
+        const getLogsSinceLine = await router.handle({
+            jsonrpc: '2.0',
+            id: 32,
+            method: 'tools/call',
+            params: {
+                name: 'diagnostic_get_project_logs',
+                arguments: {
+                    lines: 50,
+                    logLevel: 'ALL',
+                    sinceLine: 3
+                }
+            }
+        });
+        assert.ok(getLogsSinceLine);
+        assert.strictEqual(getLogsSinceLine!.result.isError, false);
+        assert.strictEqual(getLogsSinceLine!.result.structuredContent.data.sourceLines, 2);
+        assert.strictEqual(getLogsSinceLine!.result.structuredContent.data.returnedLines, 2);
 
         const fileInfo = await router.handle({
             jsonrpc: '2.0',

@@ -10,6 +10,7 @@
 ## 当前任务文档
 `workflow/260212-mcp-v2-spec-patch.md` - 将调用方 v1 Draft 重写为 MCP-first 的 V2 可实施规格补丁
 `workflow/260212-mcp-v2-implementation.md` - 按 V2 规格进入代码重构实施（协议层、manifest、workflow、测试）
+`workflow/260221-cocos-mcp-gap-closure.md` - 收敛 HelloWorld 侧发现的 MCP 能力缺口（GAP-001~004）
 
 ## 已完成任务文档
 `workflow/done/260212-mcp-spec-compliance-without-tool-logic-change.md` - 在不改工具业务逻辑前提下完成 MCP 协议规范化改造
@@ -63,3 +64,10 @@
 - `scene_open_scene` 已切换为 `asset-db.open-asset` 主路径（官方 API 直调），保留 URL 兼容候选重试，但不再做额外场景名校验。
 - `diagnostic_get_log_file_info` / `diagnostic_check_compile_status` 在未传 `projectPath` 时，默认优先使用当前打开工程路径（`Editor.Project.path`）定位 `temp/logs/project.log`，降低根路径误判。
 - `prefab_query_nodes_by_asset_uuid` 语义为“引用节点查询”（可能包含非实例）；新增 `prefab_query_instance_nodes_by_asset_uuid` 用于仅返回 Prefab 实例节点。
+- `component_set_property` 已新增 `valueKind(auto|boolean|number|string|json)`，支持 MCP 侧显式类型转换，并返回 `appliedType` 与 `dirtyBefore/dirtyAfter/dirtyChanged`。
+- `component_set_property` 在 `valueKind=auto` 时会尝试基于 `scene.query-component` 的目标属性类型自动推断（如 Boolean/Number），降低布尔字符串写入漂移风险；返回 `effectiveValueKind` 便于排障。
+- `diagnostic_check_compile_status` 与 `diagnostic_get_project_logs` 已支持增量过滤参数 `sinceLine` / `sinceTimestamp`，用于区分“历史错误”与“新增错误”。
+- 已新增 `prefab_set_node_property`，支持 `assetUuid|assetUrl` 与 `nodeUuid|nodePath` 双路定位，写 Prefab 节点级属性。
+- `component_execute_method` 已支持 `rollbackAfterCall|transient`，可在调用后触发 `scene.soft-reload` 回滚，并返回 `sceneMutated` 与 `requiresSave` 状态。
+- `component_execute_method` 的回滚已升级为“可验证回滚”：优先按场景树差异删除新增节点，失败再尝试 `scene.soft-reload`；验证失败会返回 `E_RUNTIME_ROLLBACK_FAILED`，避免错误宣称 `rollbackApplied=true`。
+- `component_execute_method` 的 `sceneMutated` 判定已改为“默认采集调用前后场景树快照（非回滚同样生效）”，避免仅依赖 dirty 状态导致副作用假阴性。

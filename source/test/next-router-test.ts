@@ -127,6 +127,7 @@ async function testListAndReadDomainCalls(): Promise<void> {
 async function testWriteToolCall(): Promise<void> {
     const setPropertyPayloads: any[] = [];
     const removeComponentPayloads: any[] = [];
+    const dirtyStates = [false, true, true, true, true, true];
 
     const requester = async (channel: string, method: string, ...args: any[]): Promise<any> => {
         if (channel === 'scene' && method === 'query-node') {
@@ -137,9 +138,22 @@ async function testWriteToolCall(): Promise<void> {
                 ]
             };
         }
+        if (channel === 'scene' && method === 'query-component') {
+            return {
+                uuid: { value: 'comp-uuid-label' },
+                enabled: { type: 'Boolean', value: true },
+                string: { type: 'String', value: 'origin' }
+            };
+        }
         if (channel === 'scene' && method === 'set-property') {
             setPropertyPayloads.push(args[0]);
             return true;
+        }
+        if (channel === 'scene' && method === 'query-dirty') {
+            if (dirtyStates.length === 0) {
+                return true;
+            }
+            return dirtyStates.shift();
         }
         if (channel === 'scene' && method === 'remove-component') {
             removeComponentPayloads.push(args[0]);
@@ -151,6 +165,7 @@ async function testWriteToolCall(): Promise<void> {
     const tools = createOfficialTools(requester);
     const matrix = createMatrix([
         'scene.query-node',
+        'scene.query-component',
         'scene.set-property',
         'scene.remove-component'
     ]);
@@ -179,6 +194,56 @@ async function testWriteToolCall(): Promise<void> {
     assert.strictEqual(setPropertyPayloads[0].path, '__comps__.0.string');
     assert.strictEqual(setPropertyPayloads[0].dump.value, 'Hello Next');
     assert.strictEqual(setPropertyPayloads[0].dump.type, 'String');
+    assert.strictEqual(setPropertyResponse!.result.structuredContent.data.appliedType, 'string');
+    assert.strictEqual(setPropertyResponse!.result.structuredContent.data.dirtyBefore, false);
+    assert.strictEqual(setPropertyResponse!.result.structuredContent.data.dirtyAfter, true);
+    assert.strictEqual(setPropertyResponse!.result.structuredContent.data.dirtyChanged, true);
+
+    const boolSetPropertyResponse = await router.handle({
+        jsonrpc: '2.0',
+        id: 31,
+        method: 'tools/call',
+        params: {
+            name: 'component_set_property',
+            arguments: {
+                nodeUuid: 'node-1',
+                componentType: 'cc.Label',
+                propertyPath: 'enabled',
+                value: 'false',
+                valueKind: 'boolean'
+            }
+        }
+    });
+    assert.ok(boolSetPropertyResponse);
+    assert.strictEqual(boolSetPropertyResponse!.result.isError, false);
+    assert.strictEqual(setPropertyPayloads.length, 2);
+    assert.strictEqual(setPropertyPayloads[1].dump.value, false);
+    assert.strictEqual(boolSetPropertyResponse!.result.structuredContent.data.appliedType, 'boolean');
+    assert.strictEqual(boolSetPropertyResponse!.result.structuredContent.data.dirtyBefore, true);
+    assert.strictEqual(boolSetPropertyResponse!.result.structuredContent.data.dirtyAfter, true);
+    assert.strictEqual(boolSetPropertyResponse!.result.structuredContent.data.dirtyChanged, false);
+
+    const autoBoolSetPropertyResponse = await router.handle({
+        jsonrpc: '2.0',
+        id: 32,
+        method: 'tools/call',
+        params: {
+            name: 'component_set_property',
+            arguments: {
+                nodeUuid: 'node-1',
+                componentType: 'cc.Label',
+                propertyPath: 'enabled',
+                value: 'false'
+            }
+        }
+    });
+    assert.ok(autoBoolSetPropertyResponse);
+    assert.strictEqual(autoBoolSetPropertyResponse!.result.isError, false);
+    assert.strictEqual(setPropertyPayloads.length, 3);
+    assert.strictEqual(setPropertyPayloads[2].dump.value, false);
+    assert.strictEqual(autoBoolSetPropertyResponse!.result.structuredContent.data.valueKind, 'auto');
+    assert.strictEqual(autoBoolSetPropertyResponse!.result.structuredContent.data.effectiveValueKind, 'boolean');
+    assert.strictEqual(autoBoolSetPropertyResponse!.result.structuredContent.data.appliedType, 'boolean');
 
     const removeComponentResponse = await router.handle({
         jsonrpc: '2.0',
@@ -1031,6 +1096,8 @@ async function testPrefabLifecycleTools(): Promise<void> {
     const createPrefabCalls: any[] = [];
     const linkPrefabCalls: any[] = [];
     const unlinkPrefabCalls: any[] = [];
+    const openAssetCalls: string[] = [];
+    const prefabSetPropertyCalls: any[] = [];
     const queriedAssetUuids: string[] = [];
     let createAttempt = 0;
 
@@ -1059,11 +1126,28 @@ async function testPrefabLifecycleTools(): Promise<void> {
                 type: 'cc.Prefab'
             };
         }
+        if (channel === 'asset-db' && method === 'open-asset') {
+            openAssetCalls.push(String(args[0] || ''));
+            return true;
+        }
 
         if (channel !== 'scene') {
             throw new Error(`Unexpected channel: ${channel}`);
         }
 
+        if (method === 'query-node-tree') {
+            return {
+                uuid: { value: 'prefab-root-uuid' },
+                name: { value: 'MeteorRoot' },
+                children: [
+                    {
+                        uuid: { value: 'prefab-sub-uuid' },
+                        name: { value: 'Sub' },
+                        children: []
+                    }
+                ]
+            };
+        }
         if (method === 'query-nodes-by-asset-uuid') {
             return ['node-prefab-1', 'node-ref-only', 'node-prefab-2'];
         }
@@ -1175,6 +1259,10 @@ async function testPrefabLifecycleTools(): Promise<void> {
             resetComponentCalls.push(args[0]);
             return true;
         }
+        if (method === 'set-property') {
+            prefabSetPropertyCalls.push(args[0]);
+            return true;
+        }
 
         throw new Error(`Unexpected scene method: ${method}`);
     };
@@ -1192,7 +1280,9 @@ async function testPrefabLifecycleTools(): Promise<void> {
         'scene.restore-prefab',
         'scene.reset-node',
         'scene.reset-component',
-        'asset-db.query-asset-info'
+        'scene.set-property',
+        'asset-db.query-asset-info',
+        'asset-db.open-asset'
     ]);
     const registry = new NextToolRegistry(tools, matrix);
     const router = new NextMcpRouter(registry);
@@ -1208,6 +1298,7 @@ async function testPrefabLifecycleTools(): Promise<void> {
     assert.ok(toolNames.includes('prefab_create_asset_from_node'));
     assert.ok(toolNames.includes('prefab_link_node_to_asset'));
     assert.ok(toolNames.includes('prefab_unlink_instance'));
+    assert.ok(toolNames.includes('prefab_set_node_property'));
     assert.ok(toolNames.includes('prefab_query_nodes_by_asset_uuid'));
     assert.ok(toolNames.includes('prefab_query_instance_nodes_by_asset_uuid'));
     assert.ok(toolNames.includes('prefab_get_instance_info'));
@@ -1288,6 +1379,31 @@ async function testPrefabLifecycleTools(): Promise<void> {
     assert.ok(unlinkNode);
     assert.strictEqual(unlinkNode!.result.isError, false);
     assert.strictEqual(unlinkPrefabCalls.length, 1);
+
+    const setPrefabNodeProperty = await router.handle({
+        jsonrpc: '2.0',
+        id: 404,
+        method: 'tools/call',
+        params: {
+            name: 'prefab_set_node_property',
+            arguments: {
+                assetUrl: 'db://assets/prefabs/meteor.prefab',
+                nodePath: 'MeteorRoot/Sub',
+                propertyPath: '_active',
+                value: 'false',
+                valueKind: 'boolean'
+            }
+        }
+    });
+    assert.ok(setPrefabNodeProperty);
+    assert.strictEqual(setPrefabNodeProperty!.result.isError, false);
+    assert.strictEqual(openAssetCalls.length, 1);
+    assert.strictEqual(openAssetCalls[0], 'db://assets/prefabs/meteor.prefab');
+    assert.strictEqual(prefabSetPropertyCalls.length, 1);
+    assert.strictEqual(prefabSetPropertyCalls[0].uuid, 'prefab-sub-uuid');
+    assert.strictEqual(prefabSetPropertyCalls[0].path, '_active');
+    assert.strictEqual(prefabSetPropertyCalls[0].dump.value, false);
+    assert.strictEqual(setPrefabNodeProperty!.result.structuredContent.data.appliedType, 'boolean');
 
     const queryNodes = await router.handle({
         jsonrpc: '2.0',

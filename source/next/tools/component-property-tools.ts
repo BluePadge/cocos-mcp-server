@@ -1,5 +1,15 @@
 import { EditorRequester, NextToolDefinition } from '../models';
-import { fail, normalizeError, ok, readDumpString, toNonEmptyString } from './common';
+import {
+    coerceValueByKind,
+    fail,
+    normalizeError,
+    normalizeValueKind,
+    ok,
+    readDumpString,
+    toNonEmptyString,
+    unwrapDumpValue,
+    ValueKind
+} from './common';
 
 interface NormalizedComponent {
     index: number;
@@ -81,6 +91,188 @@ function buildPropertyPath(componentIndex: number, propertyPath: string): string
         return propertyPath;
     }
     return `__comps__.${componentIndex}.${propertyPath}`;
+}
+
+async function querySceneDirtySafe(requester: EditorRequester): Promise<boolean | null> {
+    try {
+        const dirty = await requester('scene', 'query-dirty');
+        return dirty === true;
+    } catch {
+        return null;
+    }
+}
+
+function normalizeValueKindByType(type: string): ValueKind | null {
+    const lowered = type.trim().toLowerCase();
+    if (!lowered) {
+        return null;
+    }
+
+    if (lowered.includes('boolean')) {
+        return 'boolean';
+    }
+    if (lowered.includes('number') || lowered.includes('float') || lowered.includes('double') || lowered.includes('int')) {
+        return 'number';
+    }
+    if (lowered.includes('string')) {
+        return 'string';
+    }
+    return null;
+}
+
+function getDumpAtPath(componentDump: any, propertyPath: string): any {
+    const segments = propertyPath
+        .split('.')
+        .map((item) => item.trim())
+        .filter((item) => item !== '');
+    if (segments.length === 0) {
+        return componentDump;
+    }
+
+    let current: any = componentDump;
+    for (const segment of segments) {
+        if (!current || typeof current !== 'object') {
+            return undefined;
+        }
+
+        if (Object.prototype.hasOwnProperty.call(current, segment)) {
+            current = current[segment];
+            continue;
+        }
+
+        if (current.value && typeof current.value === 'object' && Object.prototype.hasOwnProperty.call(current.value, segment)) {
+            current = current.value[segment];
+            continue;
+        }
+
+        return undefined;
+    }
+    return current;
+}
+
+async function inferValueKindForAuto(
+    requester: EditorRequester,
+    components: NormalizedComponent[],
+    componentIndex: number,
+    propertyPath: string
+): Promise<ValueKind | null> {
+    const target = components[componentIndex];
+    const componentUuid = target?.uuid;
+    if (!componentUuid) {
+        return null;
+    }
+
+    try {
+        const componentDump = await requester('scene', 'query-component', componentUuid);
+        const propertyDump = getDumpAtPath(componentDump, propertyPath);
+        if (propertyDump === undefined) {
+            return null;
+        }
+
+        const explicitType = readDumpString((propertyDump as Record<string, any>)?.type);
+        if (explicitType) {
+            const byType = normalizeValueKindByType(explicitType);
+            if (byType) {
+                return byType;
+            }
+        }
+
+        const raw = unwrapDumpValue(propertyDump);
+        if (typeof raw === 'boolean') {
+            return 'boolean';
+        }
+        if (typeof raw === 'number') {
+            return 'number';
+        }
+        if (typeof raw === 'string') {
+            return 'string';
+        }
+        return null;
+    } catch {
+        return null;
+    }
+}
+
+interface SceneTreeSnapshot {
+    uuids: Set<string>;
+    parentByUuid: Map<string, string | null>;
+}
+
+function readNodeUuidValue(node: any): string | null {
+    return readDumpString(node?.uuid) || readDumpString(node?.id) || null;
+}
+
+function buildSceneTreeSnapshot(node: any): SceneTreeSnapshot {
+    const uuids = new Set<string>();
+    const parentByUuid = new Map<string, string | null>();
+
+    const walk = (current: any, parentUuid: string | null): void => {
+        if (!current || typeof current !== 'object') {
+            return;
+        }
+
+        const uuid = readNodeUuidValue(current);
+        if (uuid) {
+            uuids.add(uuid);
+            parentByUuid.set(uuid, parentUuid);
+        }
+
+        const children = Array.isArray((current as Record<string, any>).children)
+            ? (current as Record<string, any>).children
+            : [];
+        for (const child of children) {
+            walk(child, uuid);
+        }
+    };
+
+    walk(node, null);
+    return { uuids, parentByUuid };
+}
+
+async function querySceneTreeSnapshotSafe(requester: EditorRequester): Promise<SceneTreeSnapshot | null> {
+    try {
+        const tree = await requester('scene', 'query-node-tree');
+        if (!tree || typeof tree !== 'object') {
+            return null;
+        }
+        return buildSceneTreeSnapshot(tree);
+    } catch {
+        return null;
+    }
+}
+
+function areSnapshotsEqual(a: SceneTreeSnapshot, b: SceneTreeSnapshot): boolean {
+    if (a.uuids.size !== b.uuids.size) {
+        return false;
+    }
+    for (const uuid of a.uuids) {
+        if (!b.uuids.has(uuid)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+function findAddedRootNodeUuids(before: SceneTreeSnapshot, after: SceneTreeSnapshot): string[] {
+    const added = new Set<string>();
+    for (const uuid of after.uuids) {
+        if (!before.uuids.has(uuid)) {
+            added.add(uuid);
+        }
+    }
+
+    if (added.size === 0) {
+        return [];
+    }
+
+    const roots: string[] = [];
+    for (const uuid of added) {
+        const parentUuid = after.parentByUuid.get(uuid) || null;
+        if (!parentUuid || !added.has(parentUuid)) {
+            roots.push(uuid);
+        }
+    }
+    return roots;
 }
 
 export function createComponentPropertyTools(requester: EditorRequester): NextToolDefinition[] {
@@ -219,6 +411,11 @@ export function createComponentPropertyTools(requester: EditorRequester): NextTo
                     componentType: { type: 'string', description: '组件类型（例如 cc.Label）' },
                     propertyPath: { type: 'string', description: '组件属性路径，例：string 或 color.r' },
                     value: { description: '要写入的属性值' },
+                    valueKind: {
+                        type: 'string',
+                        enum: ['auto', 'boolean', 'number', 'string', 'json'],
+                        description: '可选，值类型转换策略（默认 auto）'
+                    },
                     valueType: { type: 'string', description: '可选，属性值类型，例：cc.Color/cc.Vec3' },
                     record: { type: 'boolean', description: '可选，是否记录 undo' }
                 },
@@ -233,19 +430,37 @@ export function createComponentPropertyTools(requester: EditorRequester): NextTo
                 }
 
                 try {
+                    const valueKind = normalizeValueKind(args?.valueKind);
+                    if (!valueKind) {
+                        return fail('valueKind 仅支持 auto/boolean/number/string/json', undefined, 'E_INVALID_ARGUMENT');
+                    }
+
                     const components = await queryNodeComponents(requester, nodeUuid);
                     const componentIndex = resolveComponentIndex(components, args);
                     if (componentIndex < 0) {
                         return fail('无法定位目标组件，请提供有效的 componentIndex/componentUuid/componentType', undefined, 'E_COMPONENT_NOT_FOUND');
                     }
 
+                    const inferredAutoKind = valueKind === 'auto'
+                        ? await inferValueKindForAuto(requester, components, componentIndex, propertyPath)
+                        : null;
+                    const effectiveValueKind = inferredAutoKind || valueKind;
+                    let coerced = coerceValueByKind(args?.value, effectiveValueKind);
+                    if (!coerced.ok && valueKind === 'auto' && effectiveValueKind !== 'auto') {
+                        coerced = coerceValueByKind(args?.value, 'auto');
+                    }
+                    if (!coerced.ok) {
+                        return fail('属性值类型转换失败', coerced.error, 'E_INVALID_ARGUMENT');
+                    }
+
                     const path = buildPropertyPath(componentIndex, propertyPath);
-                    const dump: Record<string, any> = { value: args?.value };
+                    const dump: Record<string, any> = { value: coerced.value };
                     const valueType = toNonEmptyString(args?.valueType);
                     if (valueType) {
                         dump.type = valueType;
                     }
 
+                    const dirtyBefore = await querySceneDirtySafe(requester);
                     const requestPayload: Record<string, any> = {
                         uuid: nodeUuid,
                         path,
@@ -256,12 +471,19 @@ export function createComponentPropertyTools(requester: EditorRequester): NextTo
                     }
 
                     const updated = await requester('scene', 'set-property', requestPayload);
+                    const dirtyAfter = await querySceneDirtySafe(requester);
                     return ok({
                         updated: updated === true,
                         nodeUuid,
                         componentIndex,
                         path,
-                        dump
+                        dump,
+                        valueKind,
+                        effectiveValueKind,
+                        appliedType: coerced.appliedType,
+                        dirtyBefore,
+                        dirtyAfter,
+                        dirtyChanged: dirtyBefore !== null && dirtyAfter !== null ? dirtyBefore !== dirtyAfter : null
                     });
                 } catch (error: any) {
                     return fail('设置组件属性失败', normalizeError(error));
@@ -395,6 +617,14 @@ export function createComponentPropertyTools(requester: EditorRequester): NextTo
                     args: {
                         type: 'array',
                         description: '可选，方法参数'
+                    },
+                    rollbackAfterCall: {
+                        type: 'boolean',
+                        description: '可选，执行后是否软重载回滚，默认 false'
+                    },
+                    transient: {
+                        type: 'boolean',
+                        description: '可选，等价于 rollbackAfterCall，用于临时调用不落盘'
                     }
                 },
                 required: ['componentUuid', 'methodName']
@@ -408,18 +638,106 @@ export function createComponentPropertyTools(requester: EditorRequester): NextTo
                 }
 
                 const methodArgs = Array.isArray(args?.args) ? args.args : [];
+                const rollbackRequested = args?.rollbackAfterCall === true || args?.transient === true;
                 try {
+                    const dirtyBefore = await querySceneDirtySafe(requester);
+                    const treeBefore = await querySceneTreeSnapshotSafe(requester);
                     const result = await requester('scene', 'execute-component-method', {
                         uuid: componentUuid,
                         name: methodName,
                         args: methodArgs
                     });
+                    const dirtyAfterCall = await querySceneDirtySafe(requester);
+                    const treeAfterCall = await querySceneTreeSnapshotSafe(requester);
+
+                    const sceneMutated = treeBefore && treeAfterCall
+                        ? !areSnapshotsEqual(treeBefore, treeAfterCall)
+                        : (dirtyBefore !== null && dirtyAfterCall !== null
+                            ? dirtyBefore !== dirtyAfterCall
+                            : dirtyAfterCall === true ? true : null);
+
+                    let rollbackApplied = false;
+                    let rollbackMethod: string | null = null;
+                    let rollbackVerified: boolean | null = rollbackRequested ? false : null;
+                    const rollbackErrors: string[] = [];
+                    let dirtyAfterRollback: boolean | null = dirtyAfterCall;
+                    let treeAfterRollback: SceneTreeSnapshot | null = treeAfterCall;
+
+                    if (rollbackRequested) {
+                        if (treeBefore && treeAfterCall) {
+                            const addedRoots = findAddedRootNodeUuids(treeBefore, treeAfterCall);
+                            if (addedRoots.length > 0) {
+                                rollbackMethod = 'remove-node';
+                                for (const uuid of addedRoots) {
+                                    try {
+                                        await requester('scene', 'remove-node', { uuid });
+                                    } catch (error: any) {
+                                        rollbackErrors.push(`remove-node(${uuid}) 失败: ${normalizeError(error)}`);
+                                    }
+                                }
+                            }
+                        }
+
+                        if (!rollbackMethod || rollbackErrors.length > 0) {
+                            try {
+                                await requester('scene', 'soft-reload');
+                                rollbackMethod = 'soft-reload';
+                            } catch (error: any) {
+                                rollbackErrors.push(`soft-reload 失败: ${normalizeError(error)}`);
+                            }
+                        }
+
+                        dirtyAfterRollback = await querySceneDirtySafe(requester);
+                        treeAfterRollback = await querySceneTreeSnapshotSafe(requester);
+
+                        if (treeBefore && treeAfterRollback) {
+                            rollbackVerified = areSnapshotsEqual(treeBefore, treeAfterRollback);
+                        } else if (dirtyAfterRollback !== null) {
+                            rollbackVerified = dirtyAfterRollback === false;
+                        } else {
+                            rollbackVerified = null;
+                        }
+
+                        if (rollbackVerified !== true) {
+                            const detailParts = [
+                                rollbackMethod ? `rollbackMethod=${rollbackMethod}` : 'rollbackMethod=none',
+                                `rollbackVerified=${rollbackVerified === null ? 'unknown' : String(rollbackVerified)}`
+                            ];
+                            if (rollbackErrors.length > 0) {
+                                detailParts.push(`errors=${rollbackErrors.join('; ')}`);
+                            }
+                            if (treeBefore && treeAfterRollback) {
+                                detailParts.push(`treeBefore=${treeBefore.uuids.size}`);
+                                detailParts.push(`treeAfterRollback=${treeAfterRollback.uuids.size}`);
+                            }
+                            return fail(
+                                '执行组件方法成功，但回滚验证失败',
+                                detailParts.join(' | '),
+                                'E_RUNTIME_ROLLBACK_FAILED'
+                            );
+                        }
+                        rollbackApplied = true;
+                    }
+                    const requiresSave = rollbackRequested
+                        ? (dirtyAfterRollback === true || rollbackVerified === false)
+                        : dirtyAfterCall === true;
+
                     return ok({
                         executed: true,
                         componentUuid,
                         methodName,
                         args: methodArgs,
-                        result
+                        result,
+                        rollbackRequested,
+                        rollbackApplied,
+                        rollbackMethod,
+                        rollbackVerified,
+                        rollbackErrors,
+                        dirtyBefore,
+                        dirtyAfterCall,
+                        dirtyAfterRollback,
+                        sceneMutated,
+                        requiresSave
                     });
                 } catch (error: any) {
                     return fail('执行组件方法失败', normalizeError(error));
