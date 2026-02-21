@@ -52,7 +52,6 @@ export class MCPServer {
     private settings: MCPServerSettings;
     private httpServer: http.Server | null = null;
     private toolsList: ToolDefinition[] = [];
-    private enabledTools: any[] = []; // 暂存面板配置（Next 版本不再用于过滤工具）
     private readonly sessionStore = new SessionStore();
     private readonly streamableHttp = new StreamableHttpManager();
     private readonly nextRuntimeFactory: () => Promise<{
@@ -150,43 +149,6 @@ export class MCPServer {
         return this.nextRouter;
     }
 
-    public getFilteredTools(enabledTools: any[]): ToolDefinition[] {
-        if (!enabledTools || enabledTools.length === 0) {
-            return this.toolsList;
-        }
-
-        const enabledToolNames = new Set(enabledTools.map((tool) => `${tool.category}_${tool.name}`));
-        return this.toolsList.filter((tool) => enabledToolNames.has(tool.name));
-    }
-
-    public async executeToolCall(toolName: string, args: any): Promise<any> {
-        const router = await this.getNextRouter();
-        const callResponse = await router.handle({
-            jsonrpc: '2.0',
-            id: `simple-api:${this.sessionIdGenerator()}`,
-            method: MCP_METHODS.ToolsCall,
-            params: {
-                name: toolName,
-                arguments: isRecord(args) ? args : {}
-            }
-        });
-
-        if (!callResponse) {
-            throw new Error(`Tool ${toolName} returned empty response`);
-        }
-        if (callResponse.error) {
-            throw new Error(callResponse.error.message);
-        }
-
-        const payload = callResponse.result as any;
-        if (payload?.isError === true) {
-            const businessError = payload?.structuredContent?.error;
-            throw new Error(businessError?.message || `Tool ${toolName} execution failed`);
-        }
-
-        return payload?.structuredContent?.data;
-    }
-
     public getClients(): MCPClient[] {
         return this.sessionStore.listSessions().map((session) => ({
             id: session.id,
@@ -196,11 +158,6 @@ export class MCPServer {
 
     public getAvailableTools(): ToolDefinition[] {
         return this.toolsList;
-    }
-
-    public updateEnabledTools(enabledTools: any[]): void {
-        console.log(`[MCPServer] Updating enabled tools: ${enabledTools.length} tools`);
-        this.enabledTools = enabledTools;
     }
 
     public getSettings(): MCPServerSettings {
@@ -242,10 +199,6 @@ export class MCPServer {
                     tools: this.toolsList.length,
                     sessions: this.sessionStore.size()
                 });
-            } else if (pathname?.startsWith('/api/') && req.method === 'POST') {
-                await this.handleSimpleAPIRequest(req, res, pathname);
-            } else if (pathname === '/api/tools' && req.method === 'GET') {
-                this.writeJsonResponse(res, 200, { tools: this.getSimplifiedToolsList() });
             } else {
                 this.writeJsonResponse(res, 404, { error: 'Not found' });
             }
@@ -473,7 +426,7 @@ export class MCPServer {
                 },
                 serverInfo: {
                     name: 'cocos-mcp-server',
-                    version: '1.4.0'
+                    version: '2.0.0'
                 }
             }
         };
@@ -600,132 +553,6 @@ export class MCPServer {
             port: this.settings.port,
             clients: this.sessionStore.size()
         };
-    }
-
-    private async handleSimpleAPIRequest(req: http.IncomingMessage, res: http.ServerResponse, pathname: string): Promise<void> {
-        const body = await readRawBody(req);
-
-        try {
-            // Extract tool name from path like /api/node/set_position
-            const pathParts = pathname.split('/').filter(p => p);
-            if (pathParts.length < 3) {
-                this.writeJsonResponse(res, 400, {
-                    error: 'Invalid API path. Use /api/{category}/{tool_name}'
-                });
-                return;
-            }
-
-            const category = pathParts[1];
-            const toolName = pathParts[2];
-            const fullToolName = `${category}_${toolName}`;
-
-            // Parse parameters with enhanced error handling
-            let params;
-            try {
-                params = this.parseJsonBody(body, {
-                    allowEmpty: true,
-                    routeName: 'SimpleAPI'
-                });
-            } catch (parseError: any) {
-                this.writeJsonResponse(res, 400, {
-                    error: 'Invalid JSON in request body',
-                    details: parseError.message,
-                    receivedBody: body.substring(0, 200)
-                });
-                return;
-            }
-
-            // Execute tool
-            const result = await this.executeToolCall(fullToolName, params);
-
-            this.writeJsonResponse(res, 200, {
-                success: true,
-                tool: fullToolName,
-                result
-            });
-
-        } catch (error: any) {
-            console.error('Simple API error:', error);
-            this.writeJsonResponse(res, 500, {
-                success: false,
-                error: error.message,
-                tool: pathname
-            });
-        }
-    }
-
-    private getSimplifiedToolsList(): any[] {
-        return this.toolsList.map(tool => {
-            const parts = tool.name.split('_');
-            const category = parts[0];
-            const toolName = parts.slice(1).join('_');
-
-            return {
-                name: tool.name,
-                category,
-                toolName,
-                description: tool.description,
-                apiPath: `/api/${category}/${toolName}`,
-                curlExample: this.generateCurlExample(category, toolName, tool.inputSchema)
-            };
-        });
-    }
-
-    private generateCurlExample(category: string, toolName: string, schema: any): string {
-        // Generate sample parameters based on schema
-        const sampleParams = this.generateSampleParams(schema);
-        const jsonString = JSON.stringify(sampleParams, null, 2);
-
-        return `curl -X POST http://127.0.0.1:${this.settings.port}/api/${category}/${toolName} \\\n  -H "Content-Type: application/json" \\\n  -d '${jsonString}'`;
-    }
-
-    private generateSampleParams(schema: any): any {
-        if (!schema || !schema.properties) return {};
-
-        const sample: any = {};
-        for (const [key, prop] of Object.entries(schema.properties as any)) {
-            const propSchema = prop as any;
-            switch (propSchema.type) {
-                case 'string':
-                    sample[key] = propSchema.default || 'example_string';
-                    break;
-                case 'number':
-                    sample[key] = propSchema.default || 42;
-                    break;
-                case 'boolean':
-                    sample[key] = propSchema.default || true;
-                    break;
-                case 'object':
-                    sample[key] = propSchema.default || { x: 0, y: 0, z: 0 };
-                    break;
-                default:
-                    sample[key] = 'example_value';
-            }
-        }
-        return sample;
-    }
-
-    private parseJsonBody(
-        rawBody: string,
-        options: { allowEmpty: boolean; routeName: string }
-    ): any {
-        const body = rawBody.trim();
-
-        if (!body) {
-            if (options.allowEmpty) {
-                return {};
-            }
-            throw new Error(`${options.routeName} request body is empty`);
-        }
-
-        try {
-            return JSON.parse(body);
-        } catch (error: any) {
-            throw new Error(
-                `${options.routeName} JSON parse failed: ${error.message}. ` +
-                '请确保请求体是合法 JSON；必要时可先调用 validation_validate_json_params 进行检查。'
-            );
-        }
     }
 
     public updateSettings(settings: MCPServerSettings): void {

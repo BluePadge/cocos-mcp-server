@@ -3,14 +3,19 @@
 `backend/mcp-v2-spec-patch.md` - 面向调用方的 MCP V2 规格补丁（无兼容包袱版本），涉及工具分层、命名、参数、响应、workflow、manifest、测试与 DoD
 `backend/coplay-cocos-capability-map.md` - `coplay_mcp` 到 Cocos 的能力映射、分层策略与重写边界；设计/重写 Next 工具层时必读
 
+## 归档文档
+`../docs/archive/FEATURE_GUIDE_CN.md` - 历史中文功能导览（仅用于追溯旧版本能力）
+`../docs/archive/FEATURE_GUIDE_EN.md` - 历史英文功能导览（仅用于追溯旧版本能力）
+
 ## 当前任务文档
 `workflow/260212-mcp-v2-spec-patch.md` - 将调用方 v1 Draft 重写为 MCP-first 的 V2 可实施规格补丁
 `workflow/260212-mcp-v2-implementation.md` - 按 V2 规格进入代码重构实施（协议层、manifest、workflow、测试）
-`workflow/260220-coplay-cocos-mcp-rebuild.md` - 按 coplay 能力目标重写 Cocos MCP（新实现），已推进至 `prefab_link` fallback 闭环、probe 安全化与在线 smoke 自动化（阶段 20）
 
 ## 已完成任务文档
 `workflow/done/260212-mcp-spec-compliance-without-tool-logic-change.md` - 在不改工具业务逻辑前提下完成 MCP 协议规范化改造
 `workflow/done/260212-stdio-http-bridge-for-codex.md` - Codex stdio-HTTP 桥接历史任务（已被规范化版本覆盖）
+`workflow/done/260220-coplay-cocos-mcp-rebuild.md` - 按 coplay 能力目标重写 Cocos MCP（新实现），已完成阶段 1-20（含 `prefab_link` fallback 闭环、probe 安全化与在线 smoke）
+`workflow/done/260221-single-mcp-cleanup.md` - 终态清理完成：移除 legacy 工具与 `/api/*`，收敛为单一 MCP 运行面并升级 `2.0.0`
 
 ## 全局重要记忆
 - `cocos-mcp-server` 当前 MCP 传输为：`POST /mcp`（单 JSON-RPC 消息）、`GET /mcp`（SSE）、`DELETE /mcp`（关闭会话）。
@@ -51,3 +56,7 @@
 - HelloWorld 在线实测（3.8.8）中，`prefab_create_asset_from_node -> prefab_link_node_to_asset -> prefab_unlink_instance` 链路已可闭环通过。
 - 本地自动化联调统一采用“按 `--project` 精确匹配 PID 关闭并重启实例 + MCP 三步握手（`initialize` -> `notifications/initialized` -> `tools/list/tools/call`）”流程；避免使用 `CocosCreator --help`（会拉起新实例）。
 - Cocos 扩展不会在当前进程热更新 `dist` 代码；在线验证前必须重启目标工程实例（推荐 `scripts/restart-cocos-project.sh --project <path>`）。
+- `2.0.0` 已完成仓库终态清理：移除 `source/tools/`、`source/scene.ts`、`source/panels/tool-manager/` 与 `source/mcp/v2-*`，仅保留 Next MCP 主链路。
+- HTTP 路由已收敛为 `/mcp` 与 `/health`；`/api/*` 与 `/api/tools` 已下线。
+- 构建流程改为先执行 `scripts/clean-dist.js` 再 `tsc`，避免 `dist` 残留旧产物。
+- 历史功能导览已归档到 `docs/archive/FEATURE_GUIDE_CN.md` 与 `docs/archive/FEATURE_GUIDE_EN.md`。

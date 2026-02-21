@@ -192,11 +192,11 @@ async function main(): Promise<void> {
     assert.strictEqual(traceResponse!.result.trace.traceId, traceId);
     assert.strictEqual(traceResponse!.result.trace.tool, 'asset_query_dependencies');
 
-    console.log('mcp-v2-workflow-test: PASS');
+    console.log('next-workflow-test: PASS');
 }
 
 main().catch((error) => {
-    console.error('mcp-v2-workflow-test: FAIL');
+    console.error('next-workflow-test: FAIL');
     console.error(error);
     process.exit(1);
 });

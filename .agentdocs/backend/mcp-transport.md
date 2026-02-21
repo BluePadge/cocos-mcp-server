@@ -18,6 +18,9 @@
 - `DELETE /mcp`：
   - 必须携带 `MCP-Session-Id`；
   - 成功关闭会话与该会话的 SSE 连接，返回 `204`。
+- `GET /health`：
+  - 返回服务可用状态与工具数。
+- 非上述路由统一返回 `404`，不再提供 `/api/*` 兼容接口。
 
 ### 2) 会话头与生命周期
 - `initialize` 必须是 request（带 `id`），成功后服务端返回 `MCP-Session-Id` header。

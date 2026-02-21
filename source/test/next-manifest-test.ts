@@ -226,14 +226,14 @@ async function main(): Promise<void> {
         const traceBody = parseJson(traceQuery.body);
         assert.strictEqual(traceBody.result.trace.tool, 'asset_query_assets');
 
-        console.log('mcp-v2-manifest-test: PASS');
+        console.log('next-manifest-test: PASS');
     } finally {
         server.stop();
     }
 }
 
 main().catch((error) => {
-    console.error('mcp-v2-manifest-test: FAIL');
+    console.error('next-manifest-test: FAIL');
     console.error(error);
     process.exit(1);
 });
