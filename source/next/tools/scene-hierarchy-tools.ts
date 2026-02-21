@@ -168,6 +168,135 @@ export function createSceneHierarchyTools(requester: EditorRequester): NextToolD
             }
         },
         {
+            name: 'scene_copy_game_object',
+            description: '复制一个或多个节点到编辑器剪贴板',
+            layer: 'official',
+            category: 'scene',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    uuids: {
+                        oneOf: [
+                            { type: 'string' },
+                            { type: 'array', items: { type: 'string' } }
+                        ],
+                        description: '节点 UUID 或 UUID 列表'
+                    }
+                },
+                required: ['uuids']
+            },
+            requiredCapabilities: ['scene.copy-node'],
+            run: async (args: any) => {
+                const uuids = toStringList(args?.uuids);
+                if (uuids.length === 0) {
+                    return fail('uuids 必填', undefined, 'E_INVALID_ARGUMENT');
+                }
+
+                try {
+                    const copied = uuids.length === 1
+                        ? await requester('scene', 'copy-node', uuids[0])
+                        : await requester('scene', 'copy-node', uuids);
+                    const copiedUuids = Array.isArray(copied) ? copied : uuids;
+                    return ok({
+                        copied: true,
+                        uuids,
+                        copiedUuids
+                    });
+                } catch (error: any) {
+                    return fail('复制节点到剪贴板失败', normalizeError(error));
+                }
+            }
+        },
+        {
+            name: 'scene_cut_game_object',
+            description: '剪切一个或多个节点到编辑器剪贴板',
+            layer: 'official',
+            category: 'scene',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    uuids: {
+                        oneOf: [
+                            { type: 'string' },
+                            { type: 'array', items: { type: 'string' } }
+                        ],
+                        description: '节点 UUID 或 UUID 列表'
+                    }
+                },
+                required: ['uuids']
+            },
+            requiredCapabilities: ['scene.cut-node'],
+            run: async (args: any) => {
+                const uuids = toStringList(args?.uuids);
+                if (uuids.length === 0) {
+                    return fail('uuids 必填', undefined, 'E_INVALID_ARGUMENT');
+                }
+
+                try {
+                    await requester('scene', 'cut-node', uuids.length === 1 ? uuids[0] : uuids);
+                    return ok({
+                        cut: true,
+                        uuids
+                    });
+                } catch (error: any) {
+                    return fail('剪切节点失败', normalizeError(error));
+                }
+            }
+        },
+        {
+            name: 'scene_paste_game_object',
+            description: '将剪贴板中的节点粘贴到目标节点',
+            layer: 'official',
+            category: 'scene',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    targetUuid: { type: 'string', description: '粘贴目标节点 UUID' },
+                    uuids: {
+                        oneOf: [
+                            { type: 'string' },
+                            { type: 'array', items: { type: 'string' } }
+                        ],
+                        description: '要粘贴的节点 UUID 或 UUID 列表'
+                    },
+                    keepWorldTransform: {
+                        type: 'boolean',
+                        description: '是否保持世界变换'
+                    },
+                    pasteAsChild: {
+                        type: 'boolean',
+                        description: '是否作为子节点粘贴，默认 true'
+                    }
+                },
+                required: ['targetUuid', 'uuids']
+            },
+            requiredCapabilities: ['scene.paste-node'],
+            run: async (args: any) => {
+                const targetUuid = toNonEmptyString(args?.targetUuid);
+                const uuids = toStringList(args?.uuids);
+                if (!targetUuid || uuids.length === 0) {
+                    return fail('targetUuid/uuids 必填', undefined, 'E_INVALID_ARGUMENT');
+                }
+
+                try {
+                    const pastedUuids = await requester('scene', 'paste-node', {
+                        target: targetUuid,
+                        uuids: uuids.length === 1 ? uuids[0] : uuids,
+                        keepWorldTransform: args?.keepWorldTransform === true,
+                        pasteAsChild: args?.pasteAsChild !== false
+                    });
+                    return ok({
+                        pasted: true,
+                        targetUuid,
+                        sourceUuids: uuids,
+                        pastedUuids: Array.isArray(pastedUuids) ? pastedUuids : []
+                    });
+                } catch (error: any) {
+                    return fail('粘贴节点失败', normalizeError(error));
+                }
+            }
+        },
+        {
             name: 'scene_delete_game_object',
             description: '删除一个或多个节点',
             layer: 'official',

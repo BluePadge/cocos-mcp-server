@@ -108,9 +108,59 @@ async function testCapabilityProbeIncludeWriteChecks(): Promise<void> {
     );
 }
 
+async function testCapabilityProbeAssumeAvailableStrategy(): Promise<void> {
+    const checks: CapabilityCheck[] = [
+        {
+            key: 'program.open-url',
+            channel: 'program',
+            method: 'open-url',
+            args: ['https://example.com'],
+            layer: 'official',
+            readonly: false,
+            probeStrategy: 'assume_available',
+            description: 'open url'
+        },
+        {
+            key: 'scene.query-is-ready',
+            channel: 'scene',
+            method: 'query-is-ready',
+            args: [],
+            layer: 'official',
+            readonly: true,
+            description: 'query ready'
+        }
+    ];
+
+    const calls: Array<{ channel: string; method: string }> = [];
+    const requester = async (channel: string, method: string): Promise<any> => {
+        calls.push({ channel, method });
+        if (channel === 'scene' && method === 'query-is-ready') {
+            return true;
+        }
+        throw new Error(`Unexpected invoke: ${channel}.${method}`);
+    };
+
+    const probe = new CapabilityProbe(requester);
+    const matrix = await probe.run({ checks, includeWriteChecks: true });
+
+    assert.strictEqual(matrix.byKey['program.open-url'].available, true);
+    assert.ok(matrix.byKey['program.open-url'].detail?.includes('assume_available'));
+    assert.strictEqual(
+        calls.some((item) => item.channel === 'program' && item.method === 'open-url'),
+        false,
+        'assume_available 检查项不应触发真实调用'
+    );
+    assert.strictEqual(
+        calls.some((item) => item.channel === 'scene' && item.method === 'query-is-ready'),
+        true,
+        '普通检查项仍应执行'
+    );
+}
+
 async function run(): Promise<void> {
     await testCapabilityProbeWithReadonlyFilter();
     await testCapabilityProbeIncludeWriteChecks();
+    await testCapabilityProbeAssumeAvailableStrategy();
     console.log('next-capability-probe-test: PASS');
 }
 

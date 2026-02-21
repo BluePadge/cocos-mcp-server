@@ -1,149 +1,13 @@
 import { EditorRequester, NextToolDefinition } from '../models';
 import { fail, normalizeError, ok, readDumpString, toNonEmptyString, toStringList } from './common';
-
-function unwrapValue(value: any): any {
-    if (value && typeof value === 'object' && 'value' in value) {
-        return (value as { value: any }).value;
-    }
-    return value;
-}
-
-function readNodeName(node: any): string | null {
-    return readDumpString(node?.name) || null;
-}
-
-function readPrefabState(prefab: any): number | null {
-    const raw = unwrapValue(prefab?.state);
-    return typeof raw === 'number' ? raw : null;
-}
-
-function readPrefabAssetUuid(prefab: any): string | null {
-    const direct = readDumpString(prefab?.assetUuid)
-        || readDumpString(prefab?.prefabUuid)
-        || readDumpString(prefab?.uuid)
-        || readDumpString(prefab?.__uuid__);
-    if (direct) {
-        return direct;
-    }
-
-    const nestedAsset = prefab?.asset;
-    const nested = readDumpString(nestedAsset?.uuid)
-        || readDumpString(nestedAsset?.__uuid__)
-        || readDumpString(nestedAsset?.assetUuid)
-        || readDumpString(unwrapValue(nestedAsset));
-    return nested || null;
-}
-
-function resolveNodeUuid(result: any): string | null {
-    if (typeof result === 'string' && result.trim() !== '') {
-        return result.trim();
-    }
-
-    if (Array.isArray(result) && typeof result[0] === 'string' && result[0].trim() !== '') {
-        return result[0].trim();
-    }
-
-    if (result && typeof result === 'object') {
-        const direct = readDumpString(result.uuid)
-            || readDumpString(result.nodeUuid)
-            || readDumpString(result.id)
-            || readDumpString(result.value);
-        if (direct) {
-            return direct;
-        }
-
-        const nested = readDumpString(result.node?.uuid)
-            || readDumpString(result.node?.nodeUuid);
-        if (nested) {
-            return nested;
-        }
-    }
-
-    return null;
-}
-
-function readPrefabContainer(node: any): any {
-    if (!node || typeof node !== 'object') {
-        return null;
-    }
-
-    return node.prefab
-        || node._prefabInstance
-        || node.__prefab__
-        || node._prefab
-        || null;
-}
-
-interface PrefabInstanceInfo {
-    nodeUuid: string;
-    nodeName: string | null;
-    isPrefabInstance: boolean;
-    prefabState: number | null;
-    prefabAssetUuid: string | null;
-    prefab: any;
-    node: any;
-}
-
-async function queryPrefabInstanceInfo(requester: EditorRequester, nodeUuid: string): Promise<PrefabInstanceInfo> {
-    const node = await requester('scene', 'query-node', nodeUuid);
-    const prefab = readPrefabContainer(node);
-    const prefabAssetUuid = readPrefabAssetUuid(prefab);
-    const prefabState = readPrefabState(prefab);
-    const hasPrefabSignal = Boolean(prefab)
-        || Object.prototype.hasOwnProperty.call(node || {}, 'prefab')
-        || Object.prototype.hasOwnProperty.call(node || {}, '_prefabInstance')
-        || Object.prototype.hasOwnProperty.call(node || {}, '__prefab__')
-        || Object.prototype.hasOwnProperty.call(node || {}, '_prefab');
-    const isPrefabInstance = Boolean(prefabAssetUuid)
-        || (typeof prefabState === 'number' && prefabState > 0)
-        || hasPrefabSignal;
-
-    return {
-        nodeUuid,
-        nodeName: readNodeName(node),
-        isPrefabInstance,
-        prefabState,
-        prefabAssetUuid,
-        prefab,
-        node
-    };
-}
-
-function buildCreateNodeCandidates(baseOptions: Record<string, any>, assetType: string | null): Array<Record<string, any>> {
-    const candidates: Array<Record<string, any>> = [];
-    const seen = new Set<string>();
-
-    const tryAdd = (candidate: Record<string, any>): void => {
-        const key = JSON.stringify(candidate);
-        if (!seen.has(key)) {
-            seen.add(key);
-            candidates.push(candidate);
-        }
-    };
-
-    tryAdd({ ...baseOptions });
-
-    if (assetType) {
-        tryAdd({ ...baseOptions, type: assetType });
-    }
-
-    const rawAssetUuid = baseOptions.assetUuid;
-    if (typeof rawAssetUuid === 'string' && rawAssetUuid.trim() !== '') {
-        const wrappedValue: Record<string, any> = { value: rawAssetUuid };
-        if (assetType) {
-            wrappedValue.type = assetType;
-        }
-        tryAdd({ ...baseOptions, assetUuid: wrappedValue });
-
-        const wrappedUuid: Record<string, any> = { uuid: rawAssetUuid };
-        if (assetType) {
-            wrappedUuid.type = assetType;
-        }
-        tryAdd({ ...baseOptions, assetUuid: wrappedUuid });
-    }
-
-    return candidates;
-}
+import { linkPrefabToNodeByMessage, replaceNodeWithPrefabInstance } from './prefab-link-fallback';
+import {
+    buildCreateNodeCandidates,
+    PrefabInstanceInfo,
+    queryPrefabInstanceInfo,
+    resolveNodeAssetType,
+    resolveNodeUuid
+} from './prefab-instance-utils';
 
 async function removeNodeQuietly(requester: EditorRequester, nodeUuid: string): Promise<string | null> {
     try {
@@ -198,8 +62,23 @@ async function tryLinkPrefabToNode(
         },
         {
             method: 'restore-prefab',
+            args: [nodeUuid, expectedAssetUuid],
+            label: 'restore-prefab(nodeUuid,assetUuid)'
+        },
+        {
+            method: 'restore-prefab',
             args: [{ uuid: nodeUuid, assetUuid: expectedAssetUuid }],
             label: 'restore-prefab({uuid,assetUuid})'
+        },
+        {
+            method: 'restore-prefab',
+            args: [nodeUuid],
+            label: 'restore-prefab(nodeUuid)'
+        },
+        {
+            method: 'restore-prefab',
+            args: [{ uuid: nodeUuid }],
+            label: 'restore-prefab({uuid})'
         }
     ];
 
@@ -387,6 +266,106 @@ async function applyPrefabToNode(
     throw new Error(errors.join('; '));
 }
 
+function resolveAssetUuid(result: any): string | null {
+    if (typeof result === 'string' && result.trim() !== '') {
+        return result.trim();
+    }
+
+    if (Array.isArray(result) && typeof result[0] === 'string' && result[0].trim() !== '') {
+        return result[0].trim();
+    }
+
+    if (result && typeof result === 'object') {
+        const direct = readDumpString(result.uuid)
+            || readDumpString(result.assetUuid)
+            || readDumpString(result.prefabUuid)
+            || readDumpString(result.value);
+        if (direct) {
+            return direct;
+        }
+    }
+
+    return null;
+}
+
+async function createPrefabAssetFromNode(
+    requester: EditorRequester,
+    nodeUuid: string,
+    targetUrl: string
+): Promise<{ method: string; prefabUuid: string | null; rawResult: any }> {
+    const attempts: Array<{ args: any[]; label: string }> = [
+        { args: [nodeUuid, targetUrl], label: 'create-prefab(nodeUuid, targetUrl)' },
+        { args: [{ uuid: nodeUuid, url: targetUrl }], label: 'create-prefab({uuid,url})' },
+        { args: [{ nodeUuid, targetUrl }], label: 'create-prefab({nodeUuid,targetUrl})' },
+        { args: [{ node: nodeUuid, url: targetUrl }], label: 'create-prefab({node,url})' }
+    ];
+
+    const errors: string[] = [];
+    for (const attempt of attempts) {
+        try {
+            const result = await requester('scene', 'create-prefab', ...attempt.args);
+            return {
+                method: attempt.label,
+                prefabUuid: resolveAssetUuid(result),
+                rawResult: result
+            };
+        } catch (error: any) {
+            errors.push(`${attempt.label} => ${normalizeError(error)}`);
+        }
+    }
+
+    throw new Error(errors.join('; '));
+}
+
+async function unlinkPrefabFromNode(
+    requester: EditorRequester,
+    nodeUuid: string,
+    removeNested: boolean
+): Promise<{ method: string }> {
+    const attempts: Array<{ args: any[]; label: string }> = [
+        { args: [nodeUuid, removeNested], label: 'unlink-prefab(nodeUuid, removeNested)' },
+        { args: [{ uuid: nodeUuid, removeNested }], label: 'unlink-prefab({uuid,removeNested})' },
+        { args: [{ node: nodeUuid, removeNested }], label: 'unlink-prefab({node,removeNested})' },
+        { args: [nodeUuid], label: 'unlink-prefab(nodeUuid)' }
+    ];
+
+    const errors: string[] = [];
+    for (const attempt of attempts) {
+        try {
+            await requester('scene', 'unlink-prefab', ...attempt.args);
+            return { method: attempt.label };
+        } catch (error: any) {
+            errors.push(`${attempt.label} => ${normalizeError(error)}`);
+        }
+    }
+
+    throw new Error(errors.join('; '));
+}
+
+async function queryAssetInfoWithRetry(
+    requester: EditorRequester,
+    targetUrl: string,
+    maxAttempts = 5,
+    intervalMs = 120
+): Promise<any | null> {
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+        try {
+            const info = await requester('asset-db', 'query-asset-info', targetUrl);
+            if (info) {
+                return info;
+            }
+        } catch {
+            // ignore and retry
+        }
+
+        if (attempt < maxAttempts - 1) {
+            await new Promise<void>((resolve) => setTimeout(resolve, intervalMs));
+        }
+    }
+
+    return null;
+}
+
 export function createPrefabLifecycleTools(requester: EditorRequester): NextToolDefinition[] {
     return [
         {
@@ -425,7 +404,7 @@ export function createPrefabLifecycleTools(requester: EditorRequester): NextTool
                     let assetType: string | null = null;
                     try {
                         const assetInfo = await requester('asset-db', 'query-asset-info', options.assetUuid);
-                        assetType = toNonEmptyString(assetInfo?.type);
+                        assetType = resolveNodeAssetType(assetInfo);
                     } catch {
                         assetType = null;
                     }
@@ -442,6 +421,170 @@ export function createPrefabLifecycleTools(requester: EditorRequester): NextTool
                     });
                 } catch (error: any) {
                     return fail('创建 Prefab 实例失败（未建立有效 Prefab 关联）', normalizeError(error), 'E_PREFAB_CREATE_NOT_LINKED');
+                }
+            }
+        },
+        {
+            name: 'prefab_create_asset_from_node',
+            description: '将指定节点保存为 Prefab 资源',
+            layer: 'extended',
+            category: 'prefab',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    nodeUuid: { type: 'string', description: '源节点 UUID' },
+                    targetUrl: { type: 'string', description: '目标 Prefab URL（db://assets/**/*.prefab）' }
+                },
+                required: ['nodeUuid', 'targetUrl']
+            },
+            requiredCapabilities: ['scene.create-prefab', 'asset-db.query-asset-info'],
+            run: async (args: any) => {
+                const nodeUuid = toNonEmptyString(args?.nodeUuid);
+                const targetUrl = toNonEmptyString(args?.targetUrl);
+                if (!nodeUuid || !targetUrl) {
+                    return fail('nodeUuid 与 targetUrl 必填', undefined, 'E_INVALID_ARGUMENT');
+                }
+                if (!targetUrl.startsWith('db://') || !targetUrl.endsWith('.prefab')) {
+                    return fail('targetUrl 必须为 db:// 前缀且以 .prefab 结尾', undefined, 'E_INVALID_ARGUMENT');
+                }
+
+                try {
+                    const created = await createPrefabAssetFromNode(requester, nodeUuid, targetUrl);
+                    const assetInfo = await queryAssetInfoWithRetry(requester, targetUrl);
+                    if (!assetInfo) {
+                        return fail('创建 Prefab 资源后未能查询到资产信息', undefined, 'E_PREFAB_ASSET_VERIFY_FAILED');
+                    }
+
+                    return ok({
+                        created: true,
+                        nodeUuid,
+                        targetUrl,
+                        method: created.method,
+                        prefabUuid: toNonEmptyString(assetInfo.uuid) || created.prefabUuid || null,
+                        assetInfo
+                    });
+                } catch (error: any) {
+                    return fail('创建 Prefab 资源失败', normalizeError(error));
+                }
+            }
+        },
+        {
+            name: 'prefab_link_node_to_asset',
+            description: '将节点与指定 Prefab 资源建立关联',
+            layer: 'extended',
+            category: 'prefab',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    nodeUuid: { type: 'string', description: '目标节点 UUID' },
+                    assetUuid: { type: 'string', description: 'Prefab 资源 UUID' }
+                },
+                required: ['nodeUuid', 'assetUuid']
+            },
+            requiredCapabilities: ['scene.link-prefab', 'scene.query-node'],
+            run: async (args: any) => {
+                const nodeUuid = toNonEmptyString(args?.nodeUuid);
+                const assetUuid = toNonEmptyString(args?.assetUuid);
+                if (!nodeUuid || !assetUuid) {
+                    return fail('nodeUuid 与 assetUuid 必填', undefined, 'E_INVALID_ARGUMENT');
+                }
+
+                try {
+                    const before = await queryPrefabInstanceInfo(requester, nodeUuid);
+                    const linked = await linkPrefabToNodeByMessage(requester, nodeUuid, assetUuid);
+                    const after = await queryPrefabInstanceInfo(requester, nodeUuid);
+                    const assetMatched = !after.prefabAssetUuid || after.prefabAssetUuid === assetUuid;
+                    if (after.isPrefabInstance && assetMatched) {
+                        return ok({
+                            linked: true,
+                            nodeUuid,
+                            assetUuid,
+                            method: linked.method,
+                            replaced: false,
+                            before,
+                            after
+                        });
+                    }
+
+                    const fallbackErrors: string[] = [];
+                    try {
+                        const replacement = await replaceNodeWithPrefabInstance(requester, nodeUuid, assetUuid);
+                        const replacementInfo = await queryPrefabInstanceInfo(requester, replacement.replacementNodeUuid);
+                        const replacementAssetMatched = !replacementInfo.prefabAssetUuid || replacementInfo.prefabAssetUuid === assetUuid;
+                        if (replacementInfo.isPrefabInstance && replacementAssetMatched) {
+                            return ok({
+                                linked: true,
+                                nodeUuid: replacement.replacementNodeUuid,
+                                originalNodeUuid: nodeUuid,
+                                assetUuid,
+                                method: `${linked.method} -> fallback:${replacement.createMethod}`,
+                                replaced: true,
+                                before,
+                                after: replacementInfo,
+                                fallbackWarnings: replacement.warnings
+                            });
+                        }
+
+                        const rollbackError = await removeNodeQuietly(requester, replacement.replacementNodeUuid);
+                        fallbackErrors.push(
+                            `fallback 替换节点后仍未形成实例关联（replacementNodeUuid=${replacement.replacementNodeUuid}）`
+                                + (rollbackError ? `；回滚失败：${rollbackError}` : '')
+                        );
+                    } catch (fallbackError: any) {
+                        fallbackErrors.push(normalizeError(fallbackError));
+                    }
+
+                    return fail('节点链接后未形成期望的 Prefab 关联', fallbackErrors.join('; '), 'E_PREFAB_LINK_VERIFY_FAILED');
+                } catch (error: any) {
+                    return fail('链接 Prefab 失败', normalizeError(error));
+                }
+            }
+        },
+        {
+            name: 'prefab_unlink_instance',
+            description: '解除节点与 Prefab 资源的关联',
+            layer: 'extended',
+            category: 'prefab',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    nodeUuid: { type: 'string', description: '目标节点 UUID' },
+                    removeNested: { type: 'boolean', description: '是否递归解除子节点关联，默认 false' }
+                },
+                required: ['nodeUuid']
+            },
+            requiredCapabilities: ['scene.unlink-prefab', 'scene.query-node'],
+            run: async (args: any) => {
+                const nodeUuid = toNonEmptyString(args?.nodeUuid);
+                if (!nodeUuid) {
+                    return fail('nodeUuid 必填', undefined, 'E_INVALID_ARGUMENT');
+                }
+
+                const removeNested = typeof args?.removeNested === 'boolean' ? args.removeNested : false;
+                try {
+                    const before = await queryPrefabInstanceInfo(requester, nodeUuid);
+                    if (!before.isPrefabInstance) {
+                        return fail('目标节点当前不是 Prefab 实例，无法解除关联', undefined, 'E_PREFAB_INSTANCE_REQUIRED');
+                    }
+
+                    const unlinked = await unlinkPrefabFromNode(requester, nodeUuid, removeNested);
+                    const after = await queryPrefabInstanceInfo(requester, nodeUuid);
+                    const stillLinked = Boolean(after.prefabAssetUuid)
+                        || (typeof after.prefabState === 'number' && after.prefabState > 0);
+                    if (stillLinked) {
+                        return fail('解除关联后节点仍保留 Prefab 关联', undefined, 'E_PREFAB_UNLINK_VERIFY_FAILED');
+                    }
+
+                    return ok({
+                        unlinked: true,
+                        nodeUuid,
+                        removeNested,
+                        method: unlinked.method,
+                        before,
+                        after
+                    });
+                } catch (error: any) {
+                    return fail('解除 Prefab 关联失败', normalizeError(error));
                 }
             }
         },

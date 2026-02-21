@@ -20,6 +20,15 @@ export const DEFAULT_CAPABILITY_CHECKS: CapabilityCheck[] = [
         description: '查询节点详情'
     },
     {
+        key: 'scene.query-component',
+        channel: 'scene',
+        method: 'query-component',
+        args: ['__missing_component_uuid__'],
+        layer: 'official',
+        readonly: true,
+        description: '查询组件详情'
+    },
+    {
         key: 'scene.query-nodes-by-asset-uuid',
         channel: 'scene',
         method: 'query-nodes-by-asset-uuid',
@@ -36,6 +45,24 @@ export const DEFAULT_CAPABILITY_CHECKS: CapabilityCheck[] = [
         layer: 'official',
         readonly: true,
         description: '查询可添加组件清单'
+    },
+    {
+        key: 'scene.query-classes',
+        channel: 'scene',
+        method: 'query-classes',
+        args: [{}],
+        layer: 'official',
+        readonly: true,
+        description: '查询组件类元信息'
+    },
+    {
+        key: 'scene.query-component-has-script',
+        channel: 'scene',
+        method: 'query-component-has-script',
+        args: ['cc.MissingScript'],
+        layer: 'official',
+        readonly: true,
+        description: '查询组件是否存在脚本'
     },
     {
         key: 'scene.query-gizmo-tool-name',
@@ -101,6 +128,15 @@ export const DEFAULT_CAPABILITY_CHECKS: CapabilityCheck[] = [
         description: '查询 Icon Gizmo 大小'
     },
     {
+        key: 'scene.is-native',
+        channel: 'scene',
+        method: 'is-native',
+        args: [],
+        layer: 'official',
+        readonly: true,
+        description: '查询是否为原生编辑器模式'
+    },
+    {
         key: 'scene.create-node',
         channel: 'scene',
         method: 'create-node',
@@ -117,6 +153,33 @@ export const DEFAULT_CAPABILITY_CHECKS: CapabilityCheck[] = [
         layer: 'official',
         readonly: false,
         description: '复制节点'
+    },
+    {
+        key: 'scene.copy-node',
+        channel: 'scene',
+        method: 'copy-node',
+        args: ['__missing_uuid__'],
+        layer: 'official',
+        readonly: false,
+        description: '复制节点到剪贴板'
+    },
+    {
+        key: 'scene.cut-node',
+        channel: 'scene',
+        method: 'cut-node',
+        args: ['__missing_uuid__'],
+        layer: 'official',
+        readonly: false,
+        description: '剪切节点到剪贴板'
+    },
+    {
+        key: 'scene.paste-node',
+        channel: 'scene',
+        method: 'paste-node',
+        args: [{ target: '__missing_uuid__', uuids: '__missing_uuid__', keepWorldTransform: false, pasteAsChild: true }],
+        layer: 'official',
+        readonly: false,
+        description: '粘贴节点'
     },
     {
         key: 'scene.remove-node',
@@ -164,6 +227,42 @@ export const DEFAULT_CAPABILITY_CHECKS: CapabilityCheck[] = [
         description: '设置属性'
     },
     {
+        key: 'scene.reset-property',
+        channel: 'scene',
+        method: 'reset-property',
+        args: [{ uuid: '__missing_uuid__', path: 'name', dump: { value: null } }],
+        layer: 'official',
+        readonly: false,
+        description: '重置属性'
+    },
+    {
+        key: 'scene.move-array-element',
+        channel: 'scene',
+        method: 'move-array-element',
+        args: [{ uuid: '__missing_uuid__', path: '__comps__.0.list', target: 0, offset: 1 }],
+        layer: 'official',
+        readonly: false,
+        description: '移动数组元素'
+    },
+    {
+        key: 'scene.remove-array-element',
+        channel: 'scene',
+        method: 'remove-array-element',
+        args: [{ uuid: '__missing_uuid__', path: '__comps__.0.list', index: 0 }],
+        layer: 'official',
+        readonly: false,
+        description: '删除数组元素'
+    },
+    {
+        key: 'scene.execute-component-method',
+        channel: 'scene',
+        method: 'execute-component-method',
+        args: [{ uuid: '__missing_component_uuid__', name: '__probe__', args: [] }],
+        layer: 'official',
+        readonly: false,
+        description: '执行组件方法'
+    },
+    {
         key: 'scene.reset-node',
         channel: 'scene',
         method: 'reset-node',
@@ -191,13 +290,51 @@ export const DEFAULT_CAPABILITY_CHECKS: CapabilityCheck[] = [
         description: '还原 Prefab'
     },
     {
+        key: 'scene.create-prefab',
+        channel: 'scene',
+        method: 'create-prefab',
+        args: ['__missing_uuid__', 'db://assets/__mcp_probe__.prefab'],
+        layer: 'extended',
+        readonly: false,
+        description: '从节点创建 Prefab 资源'
+    },
+    {
+        key: 'scene.link-prefab',
+        channel: 'scene',
+        method: 'link-prefab',
+        args: ['__missing_uuid__', '__missing_asset_uuid__'],
+        layer: 'extended',
+        readonly: false,
+        description: '将节点关联到 Prefab 资源'
+    },
+    {
+        key: 'scene.unlink-prefab',
+        channel: 'scene',
+        method: 'unlink-prefab',
+        args: ['__missing_uuid__', false],
+        layer: 'extended',
+        readonly: false,
+        description: '解除节点与 Prefab 资源关联'
+    },
+    {
         key: 'scene.open-scene',
         channel: 'scene',
         method: 'open-scene',
         args: ['db://assets/__mcp_probe_missing__.scene'],
         layer: 'official',
         readonly: false,
+        probeStrategy: 'assume_available',
         description: '打开场景'
+    },
+    {
+        key: 'scene.save-as-scene',
+        channel: 'scene',
+        method: 'save-as-scene',
+        args: [],
+        layer: 'official',
+        readonly: false,
+        probeStrategy: 'assume_available',
+        description: '场景另存为'
     },
     {
         key: 'scene.query-is-ready',
@@ -395,7 +532,71 @@ export const DEFAULT_CAPABILITY_CHECKS: CapabilityCheck[] = [
         args: ['db://assets/not-exist.asset'],
         layer: 'official',
         readonly: false,
+        probeStrategy: 'assume_available',
         description: '打开资源'
+    },
+    {
+        key: 'asset-db.generate-available-url',
+        channel: 'asset-db',
+        method: 'generate-available-url',
+        args: ['db://assets/not-exist.asset'],
+        layer: 'official',
+        readonly: true,
+        description: '生成可用资源 URL'
+    },
+    {
+        key: 'asset-db.query-asset-meta',
+        channel: 'asset-db',
+        method: 'query-asset-meta',
+        args: ['db://assets/not-exist.asset'],
+        layer: 'official',
+        readonly: true,
+        description: '查询资源 meta'
+    },
+    {
+        key: 'asset-db.query-missing-asset-info',
+        channel: 'asset-db',
+        method: 'query-missing-asset-info',
+        args: ['db://assets/not-exist.asset'],
+        layer: 'official',
+        readonly: true,
+        description: '查询丢失资源信息'
+    },
+    {
+        key: 'asset-db.create-asset',
+        channel: 'asset-db',
+        method: 'create-asset',
+        args: ['db://invalid/__mcp_probe__.asset', '{}'],
+        layer: 'official',
+        readonly: false,
+        description: '创建资源'
+    },
+    {
+        key: 'asset-db.import-asset',
+        channel: 'asset-db',
+        method: 'import-asset',
+        args: ['/tmp/__mcp_probe_missing__.asset', 'db://invalid/__mcp_probe__.asset'],
+        layer: 'official',
+        readonly: false,
+        description: '导入资源'
+    },
+    {
+        key: 'asset-db.save-asset',
+        channel: 'asset-db',
+        method: 'save-asset',
+        args: ['db://invalid/__mcp_probe__.asset', '{}'],
+        layer: 'official',
+        readonly: false,
+        description: '保存资源内容'
+    },
+    {
+        key: 'asset-db.save-asset-meta',
+        channel: 'asset-db',
+        method: 'save-asset-meta',
+        args: ['db://invalid/__mcp_probe__.asset', '{}'],
+        layer: 'official',
+        readonly: false,
+        description: '保存资源 meta'
     },
     {
         key: 'project.query-config',
@@ -405,6 +606,25 @@ export const DEFAULT_CAPABILITY_CHECKS: CapabilityCheck[] = [
         layer: 'official',
         readonly: true,
         description: '查询项目配置'
+    },
+    {
+        key: 'project.open-settings',
+        channel: 'project',
+        method: 'open-settings',
+        args: ['__mcp_probe__', ''],
+        layer: 'official',
+        readonly: false,
+        probeStrategy: 'assume_available',
+        description: '打开项目设置'
+    },
+    {
+        key: 'project.set-config',
+        channel: 'project',
+        method: 'set-config',
+        args: ['__mcp_probe__', '__mcp_probe__', '__probe__'],
+        layer: 'official',
+        readonly: false,
+        description: '设置项目配置'
     },
     {
         key: 'server.query-ip-list',
@@ -434,6 +654,25 @@ export const DEFAULT_CAPABILITY_CHECKS: CapabilityCheck[] = [
         description: '查询编辑器偏好设置'
     },
     {
+        key: 'preferences.open-settings',
+        channel: 'preferences',
+        method: 'open-settings',
+        args: ['__mcp_probe__'],
+        layer: 'official',
+        readonly: false,
+        probeStrategy: 'assume_available',
+        description: '打开偏好设置'
+    },
+    {
+        key: 'preferences.set-config',
+        channel: 'preferences',
+        method: 'set-config',
+        args: ['__mcp_probe__', '__mcp_probe__', '__probe__', 'global'],
+        layer: 'official',
+        readonly: false,
+        description: '设置偏好配置'
+    },
+    {
         key: 'engine.query-engine-info',
         channel: 'engine',
         method: 'query-engine-info',
@@ -449,6 +688,7 @@ export const DEFAULT_CAPABILITY_CHECKS: CapabilityCheck[] = [
         args: ['default'],
         layer: 'official',
         readonly: false,
+        probeStrategy: 'assume_available',
         description: '打开构建面板'
     },
     {
@@ -470,6 +710,34 @@ export const DEFAULT_CAPABILITY_CHECKS: CapabilityCheck[] = [
         description: '查询 information 信息项'
     },
     {
+        key: 'information.open-information-dialog',
+        channel: 'information',
+        method: 'open-information-dialog',
+        args: ['__mcp_probe__'],
+        layer: 'official',
+        readonly: false,
+        probeStrategy: 'assume_available',
+        description: '打开 information 对话框'
+    },
+    {
+        key: 'information.has-dialog',
+        channel: 'information',
+        method: 'has-dialog',
+        args: ['__mcp_probe__'],
+        layer: 'official',
+        readonly: true,
+        description: '检查 information 对话框'
+    },
+    {
+        key: 'information.close-dialog',
+        channel: 'information',
+        method: 'close-dialog',
+        args: ['__mcp_probe__'],
+        layer: 'official',
+        readonly: false,
+        description: '关闭 information 对话框'
+    },
+    {
         key: 'program.query-program-info',
         channel: 'program',
         method: 'query-program-info',
@@ -477,6 +745,26 @@ export const DEFAULT_CAPABILITY_CHECKS: CapabilityCheck[] = [
         layer: 'official',
         readonly: true,
         description: '查询 program 信息'
+    },
+    {
+        key: 'program.open-program',
+        channel: 'program',
+        method: 'open-program',
+        args: ['__mcp_probe_program__'],
+        layer: 'official',
+        readonly: false,
+        probeStrategy: 'assume_available',
+        description: '打开外部程序'
+    },
+    {
+        key: 'program.open-url',
+        channel: 'program',
+        method: 'open-url',
+        args: ['__mcp_probe_invalid_url__'],
+        layer: 'official',
+        readonly: false,
+        probeStrategy: 'assume_available',
+        description: '打开外部链接'
     },
     {
         key: 'programming.query-shared-settings',

@@ -94,25 +94,38 @@ if ! [[ "$WAIT_SECONDS" =~ ^[0-9]+$ ]]; then
   exit 1
 fi
 
-pattern="CocosCreator.*--project ${PROJECT_PATH}"
+# 为了保证切换到目标工程，先关闭全部 Cocos 主进程（避免被已有实例接管打开请求）
+all_instances_pattern="CocosCreator.app/Contents/MacOS/CocosCreator --project "
+target_pattern="CocosCreator.*--project ${PROJECT_PATH}"
 
-if pgrep -f "$pattern" >/dev/null; then
-  echo "[restart-cocos] 检测到目标工程实例，准备关闭..."
-  pkill -TERM -f "$pattern" || true
+if pgrep -f "$all_instances_pattern" >/dev/null; then
+  echo "[restart-cocos] 检测到已有 Cocos 实例，准备全部关闭..."
+  pkill -TERM -f "$all_instances_pattern" || true
   for _ in $(seq 1 40); do
-    if ! pgrep -f "$pattern" >/dev/null; then
+    if ! pgrep -f "$all_instances_pattern" >/dev/null; then
       break
     fi
     sleep 0.5
   done
-  if pgrep -f "$pattern" >/dev/null; then
+  if pgrep -f "$all_instances_pattern" >/dev/null; then
     echo "[restart-cocos] TERM 未完全退出，执行 KILL"
-    pkill -KILL -f "$pattern" || true
+    pkill -KILL -f "$all_instances_pattern" || true
   fi
 fi
 
 echo "[restart-cocos] 启动工程: $PROJECT_PATH"
-"$COCOS_APP" --project "$PROJECT_PATH" --can-show-upgrade-dialog true >"$LOG_PATH" 2>&1 &
+app_bundle=""
+if [[ "$COCOS_APP" == *".app/Contents/MacOS/"* ]]; then
+  app_bundle="${COCOS_APP%%/Contents/MacOS/*}.app"
+fi
+
+if [[ -n "$app_bundle" && -d "$app_bundle" ]]; then
+  nohup open -na "$app_bundle" --args --project "$PROJECT_PATH" --can-show-upgrade-dialog true >"$LOG_PATH" 2>&1 < /dev/null &
+else
+  nohup "$COCOS_APP" --project "$PROJECT_PATH" --can-show-upgrade-dialog true >"$LOG_PATH" 2>&1 < /dev/null &
+fi
+COCOS_PID=$!
+disown "$COCOS_PID" 2>/dev/null || true
 
 check_health_ready() {
   local health_json="$1"
@@ -172,6 +185,13 @@ try {
 ready=0
 consecutive_ready=0
 for _ in $(seq 1 "$WAIT_SECONDS"); do
+  # 必须先确认目标工程实例已经拉起，避免误判其他工程实例的 health
+  if ! pgrep -f "$target_pattern" >/dev/null; then
+    consecutive_ready=0
+    sleep 1
+    continue
+  fi
+
   health_json=$(curl -sS "$HEALTH_URL" 2>/dev/null || true)
   if [[ -n "$health_json" ]] && check_health_ready "$health_json"; then
     if [[ "$VERIFY_MCP" -eq 1 ]]; then

@@ -17,6 +17,45 @@ function buildAssetOperationOptions(overwrite: boolean): { overwrite: boolean; r
     };
 }
 
+function parseAssetOperationOptions(args: any): { overwrite: boolean; rename: boolean } {
+    if (typeof args?.overwrite === 'boolean') {
+        if (typeof args?.rename === 'boolean') {
+            return {
+                overwrite: args.overwrite,
+                rename: args.rename
+            };
+        }
+        return buildAssetOperationOptions(args.overwrite);
+    }
+
+    if (typeof args?.rename === 'boolean') {
+        return {
+            overwrite: false,
+            rename: args.rename
+        };
+    }
+
+    return {
+        overwrite: false,
+        rename: true
+    };
+}
+
+function parseAssetContent(content: any, encoding: any): string | Buffer | null {
+    if (content === null) {
+        return null;
+    }
+
+    if (typeof content === 'string') {
+        if (encoding === 'base64') {
+            return Buffer.from(content, 'base64');
+        }
+        return content;
+    }
+
+    return null;
+}
+
 async function enrichAssetInfos(
     requester: EditorRequester,
     uuids: string[],
@@ -433,6 +472,291 @@ export function createAssetDependencyTools(requester: EditorRequester): NextTool
                     return ok({ opened: true, urlOrUuid });
                 } catch (error: any) {
                     return fail('打开资源失败', normalizeError(error));
+                }
+            }
+        },
+        {
+            name: 'asset_generate_available_url',
+            description: '生成可用的资源 URL（避免重名冲突）',
+            layer: 'official',
+            category: 'asset',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    url: { type: 'string', description: '期望资源 URL' }
+                },
+                required: ['url']
+            },
+            requiredCapabilities: ['asset-db.generate-available-url'],
+            run: async (args: any) => {
+                const url = toNonEmptyString(args?.url);
+                if (!url) {
+                    return fail('url 必填', undefined, 'E_INVALID_ARGUMENT');
+                }
+
+                try {
+                    const availableUrl = await requester('asset-db', 'generate-available-url', url);
+                    return ok({
+                        inputUrl: url,
+                        availableUrl
+                    });
+                } catch (error: any) {
+                    return fail('生成可用 URL 失败', normalizeError(error));
+                }
+            }
+        },
+        {
+            name: 'asset_query_asset_meta',
+            description: '查询资源 meta 信息',
+            layer: 'official',
+            category: 'asset',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    urlOrUuid: { type: 'string', description: '资源 URL 或 UUID' }
+                },
+                required: ['urlOrUuid']
+            },
+            requiredCapabilities: ['asset-db.query-asset-meta'],
+            run: async (args: any) => {
+                const urlOrUuid = toNonEmptyString(args?.urlOrUuid);
+                if (!urlOrUuid) {
+                    return fail('urlOrUuid 必填', undefined, 'E_INVALID_ARGUMENT');
+                }
+
+                try {
+                    const meta = await requester('asset-db', 'query-asset-meta', urlOrUuid);
+                    return ok({
+                        urlOrUuid,
+                        meta
+                    });
+                } catch (error: any) {
+                    return fail('查询资源 meta 失败', normalizeError(error));
+                }
+            }
+        },
+        {
+            name: 'asset_query_missing_asset_info',
+            description: '查询丢失资源信息',
+            layer: 'official',
+            category: 'asset',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    urlOrPath: { type: 'string', description: '资源 URL 或路径' }
+                },
+                required: ['urlOrPath']
+            },
+            requiredCapabilities: ['asset-db.query-missing-asset-info'],
+            run: async (args: any) => {
+                const urlOrPath = toNonEmptyString(args?.urlOrPath);
+                if (!urlOrPath) {
+                    return fail('urlOrPath 必填', undefined, 'E_INVALID_ARGUMENT');
+                }
+
+                try {
+                    const missingInfo = await requester('asset-db', 'query-missing-asset-info', urlOrPath);
+                    return ok({
+                        urlOrPath,
+                        missingInfo
+                    });
+                } catch (error: any) {
+                    return fail('查询丢失资源信息失败', normalizeError(error));
+                }
+            }
+        },
+        {
+            name: 'asset_create_asset',
+            description: '创建资源文件（asset-db.create-asset）',
+            layer: 'official',
+            category: 'asset',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    url: { type: 'string', description: '目标资源 URL' },
+                    content: { description: '资源内容（字符串或 null）' },
+                    contentEncoding: {
+                        type: 'string',
+                        enum: ['utf8', 'base64'],
+                        description: 'content 编码，默认 utf8'
+                    },
+                    overwrite: { type: 'boolean', description: '是否覆盖同名资源' },
+                    rename: { type: 'boolean', description: '冲突时是否自动重命名' }
+                },
+                required: ['url']
+            },
+            requiredCapabilities: ['asset-db.create-asset'],
+            run: async (args: any) => {
+                const url = toNonEmptyString(args?.url);
+                if (!url) {
+                    return fail('url 必填', undefined, 'E_INVALID_ARGUMENT');
+                }
+
+                const contentEncoding = toNonEmptyString(args?.contentEncoding) || 'utf8';
+                if (contentEncoding !== 'utf8' && contentEncoding !== 'base64') {
+                    return fail('contentEncoding 仅支持 utf8/base64', undefined, 'E_INVALID_ARGUMENT');
+                }
+
+                const content = parseAssetContent(args?.content, contentEncoding);
+                if (args?.content !== null && args?.content !== undefined && content === null) {
+                    return fail('content 必须为字符串或 null', undefined, 'E_INVALID_ARGUMENT');
+                }
+
+                try {
+                    const result = await requester(
+                        'asset-db',
+                        'create-asset',
+                        url,
+                        content,
+                        parseAssetOperationOptions(args)
+                    );
+                    return ok({
+                        created: true,
+                        url,
+                        contentEncoding,
+                        result
+                    });
+                } catch (error: any) {
+                    return fail('创建资源失败', normalizeError(error));
+                }
+            }
+        },
+        {
+            name: 'asset_import_asset',
+            description: '从本地路径导入资源到目标 URL',
+            layer: 'official',
+            category: 'asset',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    sourcePath: { type: 'string', description: '本地文件路径' },
+                    targetUrl: { type: 'string', description: '目标资源 URL' },
+                    overwrite: { type: 'boolean', description: '是否覆盖同名资源' },
+                    rename: { type: 'boolean', description: '冲突时是否自动重命名' }
+                },
+                required: ['sourcePath', 'targetUrl']
+            },
+            requiredCapabilities: ['asset-db.import-asset'],
+            run: async (args: any) => {
+                const sourcePath = toNonEmptyString(args?.sourcePath);
+                const targetUrl = toNonEmptyString(args?.targetUrl);
+                if (!sourcePath || !targetUrl) {
+                    return fail('sourcePath/targetUrl 必填', undefined, 'E_INVALID_ARGUMENT');
+                }
+
+                try {
+                    const result = await requester(
+                        'asset-db',
+                        'import-asset',
+                        sourcePath,
+                        targetUrl,
+                        parseAssetOperationOptions(args)
+                    );
+                    return ok({
+                        imported: true,
+                        sourcePath,
+                        targetUrl,
+                        result
+                    });
+                } catch (error: any) {
+                    return fail('导入资源失败', normalizeError(error));
+                }
+            }
+        },
+        {
+            name: 'asset_save_asset',
+            description: '保存资源内容（asset-db.save-asset）',
+            layer: 'official',
+            category: 'asset',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    url: { type: 'string', description: '资源 URL' },
+                    content: { type: 'string', description: '资源内容' },
+                    contentEncoding: {
+                        type: 'string',
+                        enum: ['utf8', 'base64'],
+                        description: 'content 编码，默认 utf8'
+                    }
+                },
+                required: ['url', 'content']
+            },
+            requiredCapabilities: ['asset-db.save-asset'],
+            run: async (args: any) => {
+                const url = toNonEmptyString(args?.url);
+                if (!url || typeof args?.content !== 'string') {
+                    return fail('url/content 必填且 content 必须为字符串', undefined, 'E_INVALID_ARGUMENT');
+                }
+
+                const contentEncoding = toNonEmptyString(args?.contentEncoding) || 'utf8';
+                if (contentEncoding !== 'utf8' && contentEncoding !== 'base64') {
+                    return fail('contentEncoding 仅支持 utf8/base64', undefined, 'E_INVALID_ARGUMENT');
+                }
+
+                const content = parseAssetContent(args.content, contentEncoding);
+                if (content === null) {
+                    return fail('content 解析失败', undefined, 'E_INVALID_ARGUMENT');
+                }
+
+                try {
+                    const result = await requester('asset-db', 'save-asset', url, content);
+                    return ok({
+                        saved: true,
+                        url,
+                        contentEncoding,
+                        result
+                    });
+                } catch (error: any) {
+                    return fail('保存资源内容失败', normalizeError(error));
+                }
+            }
+        },
+        {
+            name: 'asset_save_asset_meta',
+            description: '保存资源 meta 内容（asset-db.save-asset-meta）',
+            layer: 'official',
+            category: 'asset',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    url: { type: 'string', description: '资源 URL' },
+                    meta: {
+                        description: 'meta 内容，支持对象或 JSON 字符串'
+                    }
+                },
+                required: ['url', 'meta']
+            },
+            requiredCapabilities: ['asset-db.save-asset-meta'],
+            run: async (args: any) => {
+                const url = toNonEmptyString(args?.url);
+                if (!url) {
+                    return fail('url 必填', undefined, 'E_INVALID_ARGUMENT');
+                }
+
+                let metaContent: string | null = null;
+                if (typeof args?.meta === 'string') {
+                    metaContent = args.meta;
+                } else if (args?.meta && typeof args.meta === 'object') {
+                    try {
+                        metaContent = JSON.stringify(args.meta, null, 2);
+                    } catch (error: any) {
+                        return fail('meta 对象序列化失败', normalizeError(error), 'E_INVALID_ARGUMENT');
+                    }
+                }
+
+                if (!metaContent) {
+                    return fail('meta 必须为对象或 JSON 字符串', undefined, 'E_INVALID_ARGUMENT');
+                }
+
+                try {
+                    const result = await requester('asset-db', 'save-asset-meta', url, metaContent);
+                    return ok({
+                        saved: true,
+                        url,
+                        result
+                    });
+                } catch (error: any) {
+                    return fail('保存资源 meta 失败', normalizeError(error));
                 }
             }
         }

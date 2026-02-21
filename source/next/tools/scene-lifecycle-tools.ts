@@ -61,6 +61,28 @@ export function createSceneLifecycleTools(requester: EditorRequester): NextToolD
             }
         },
         {
+            name: 'scene_save_as_scene',
+            description: '另存当前场景（由编辑器交互选择目标）',
+            layer: 'official',
+            category: 'scene',
+            inputSchema: {
+                type: 'object',
+                properties: {}
+            },
+            requiredCapabilities: ['scene.save-as-scene'],
+            run: async () => {
+                try {
+                    const sceneUrl = await requester('scene', 'save-as-scene');
+                    return ok({
+                        saved: true,
+                        sceneUrl: sceneUrl || null
+                    });
+                } catch (error: any) {
+                    return fail('场景另存失败', normalizeError(error));
+                }
+            }
+        },
+        {
             name: 'scene_close_scene',
             description: '关闭当前场景',
             layer: 'official',

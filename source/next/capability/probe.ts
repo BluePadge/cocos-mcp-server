@@ -38,6 +38,21 @@ export class CapabilityProbe {
 
         for (const check of filteredChecks) {
             const checkedAt = new Date().toISOString();
+            if (check.probeStrategy === 'assume_available') {
+                byKey[check.key] = {
+                    key: check.key,
+                    channel: check.channel,
+                    method: check.method,
+                    layer: check.layer,
+                    readonly: check.readonly,
+                    description: check.description,
+                    available: true,
+                    checkedAt,
+                    detail: 'skip invoke (assume_available)'
+                };
+                continue;
+            }
+
             try {
                 const result = await requester(check.channel, check.method, ...(check.args ?? []));
                 const detail = await this.cleanupProbeSideEffects(check, result, requester);
@@ -128,6 +143,25 @@ export class CapabilityProbe {
             return result
                 .filter((item) => typeof item === 'string' && item.trim() !== '')
                 .map((item) => item.trim());
+        }
+
+        if (result && typeof result === 'object') {
+            const candidates = [
+                result.uuid,
+                result.nodeUuid,
+                result.id,
+                result.value,
+                result?.node?.uuid,
+                result?.node?.nodeUuid
+            ];
+            for (const candidate of candidates) {
+                if (typeof candidate === 'string' && candidate.trim() !== '') {
+                    return [candidate.trim()];
+                }
+                if (candidate && typeof candidate === 'object' && typeof candidate.value === 'string' && candidate.value.trim() !== '') {
+                    return [candidate.value.trim()];
+                }
+            }
         }
 
         return [];

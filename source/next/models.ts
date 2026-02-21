@@ -7,6 +7,7 @@ export interface CapabilityCheck {
     args?: any[];
     layer: CapabilityLayer;
     readonly: boolean;
+    probeStrategy?: 'invoke' | 'assume_available';
     description: string;
 }
 

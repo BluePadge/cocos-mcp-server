@@ -289,6 +289,277 @@ export function createComponentPropertyTools(requester: EditorRequester): NextTo
                     return fail('查询可用组件类型失败', normalizeError(error));
                 }
             }
+        },
+        {
+            name: 'component_get_component_info',
+            description: '按组件 UUID 查询组件详情',
+            layer: 'official',
+            category: 'component',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    componentUuid: { type: 'string', description: '组件 UUID' }
+                },
+                required: ['componentUuid']
+            },
+            requiredCapabilities: ['scene.query-component'],
+            run: async (args: any) => {
+                const componentUuid = toNonEmptyString(args?.componentUuid);
+                if (!componentUuid) {
+                    return fail('componentUuid 必填', undefined, 'E_INVALID_ARGUMENT');
+                }
+
+                try {
+                    const component = await requester('scene', 'query-component', componentUuid);
+                    return ok({
+                        componentUuid,
+                        component
+                    });
+                } catch (error: any) {
+                    return fail('查询组件详情失败', normalizeError(error));
+                }
+            }
+        },
+        {
+            name: 'component_query_classes',
+            description: '查询组件类元信息（scene.query-classes）',
+            layer: 'official',
+            category: 'component',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    options: {
+                        type: 'object',
+                        description: '可选，query-classes 参数'
+                    }
+                }
+            },
+            requiredCapabilities: ['scene.query-classes'],
+            run: async (args: any) => {
+                const options = args?.options && typeof args.options === 'object' ? args.options : undefined;
+                try {
+                    const classes = options
+                        ? await requester('scene', 'query-classes', options)
+                        : await requester('scene', 'query-classes');
+                    const list = Array.isArray(classes) ? classes : [];
+                    return ok({
+                        options: options || null,
+                        classes: list,
+                        count: list.length
+                    });
+                } catch (error: any) {
+                    return fail('查询组件类信息失败', normalizeError(error));
+                }
+            }
+        },
+        {
+            name: 'component_has_script',
+            description: '检查指定组件名是否已存在脚本实现',
+            layer: 'official',
+            category: 'component',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    componentName: { type: 'string', description: '组件名称' }
+                },
+                required: ['componentName']
+            },
+            requiredCapabilities: ['scene.query-component-has-script'],
+            run: async (args: any) => {
+                const componentName = toNonEmptyString(args?.componentName);
+                if (!componentName) {
+                    return fail('componentName 必填', undefined, 'E_INVALID_ARGUMENT');
+                }
+
+                try {
+                    const hasScript = await requester('scene', 'query-component-has-script', componentName);
+                    return ok({
+                        componentName,
+                        hasScript: hasScript === true
+                    });
+                } catch (error: any) {
+                    return fail('查询组件脚本状态失败', normalizeError(error));
+                }
+            }
+        },
+        {
+            name: 'component_execute_method',
+            description: '执行组件方法（scene.execute-component-method）',
+            layer: 'official',
+            category: 'component',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    componentUuid: { type: 'string', description: '组件 UUID' },
+                    methodName: { type: 'string', description: '方法名' },
+                    args: {
+                        type: 'array',
+                        description: '可选，方法参数'
+                    }
+                },
+                required: ['componentUuid', 'methodName']
+            },
+            requiredCapabilities: ['scene.execute-component-method'],
+            run: async (args: any) => {
+                const componentUuid = toNonEmptyString(args?.componentUuid);
+                const methodName = toNonEmptyString(args?.methodName);
+                if (!componentUuid || !methodName) {
+                    return fail('componentUuid/methodName 必填', undefined, 'E_INVALID_ARGUMENT');
+                }
+
+                const methodArgs = Array.isArray(args?.args) ? args.args : [];
+                try {
+                    const result = await requester('scene', 'execute-component-method', {
+                        uuid: componentUuid,
+                        name: methodName,
+                        args: methodArgs
+                    });
+                    return ok({
+                        executed: true,
+                        componentUuid,
+                        methodName,
+                        args: methodArgs,
+                        result
+                    });
+                } catch (error: any) {
+                    return fail('执行组件方法失败', normalizeError(error));
+                }
+            }
+        },
+        {
+            name: 'component_move_array_element',
+            description: '移动组件数组属性元素位置',
+            layer: 'official',
+            category: 'component',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    uuid: { type: 'string', description: '对象 UUID（节点或组件）' },
+                    path: { type: 'string', description: '数组属性路径' },
+                    target: { type: 'number', description: '目标索引' },
+                    offset: { type: 'number', description: '偏移量' }
+                },
+                required: ['uuid', 'path', 'target', 'offset']
+            },
+            requiredCapabilities: ['scene.move-array-element'],
+            run: async (args: any) => {
+                const uuid = toNonEmptyString(args?.uuid);
+                const path = toNonEmptyString(args?.path);
+                if (!uuid || !path || !Number.isInteger(args?.target) || !Number.isInteger(args?.offset)) {
+                    return fail('uuid/path/target/offset 必填且 target/offset 必须为整数', undefined, 'E_INVALID_ARGUMENT');
+                }
+
+                try {
+                    const moved = await requester('scene', 'move-array-element', {
+                        uuid,
+                        path,
+                        target: args.target,
+                        offset: args.offset
+                    });
+                    return ok({
+                        moved: moved === true,
+                        uuid,
+                        path,
+                        target: args.target,
+                        offset: args.offset
+                    });
+                } catch (error: any) {
+                    return fail('移动数组元素失败', normalizeError(error));
+                }
+            }
+        },
+        {
+            name: 'component_remove_array_element',
+            description: '删除组件数组属性元素',
+            layer: 'official',
+            category: 'component',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    uuid: { type: 'string', description: '对象 UUID（节点或组件）' },
+                    path: { type: 'string', description: '数组属性路径' },
+                    index: { type: 'number', description: '数组索引' }
+                },
+                required: ['uuid', 'path', 'index']
+            },
+            requiredCapabilities: ['scene.remove-array-element'],
+            run: async (args: any) => {
+                const uuid = toNonEmptyString(args?.uuid);
+                const path = toNonEmptyString(args?.path);
+                if (!uuid || !path || !Number.isInteger(args?.index)) {
+                    return fail('uuid/path/index 必填且 index 必须为整数', undefined, 'E_INVALID_ARGUMENT');
+                }
+
+                try {
+                    const removed = await requester('scene', 'remove-array-element', {
+                        uuid,
+                        path,
+                        index: args.index
+                    });
+                    return ok({
+                        removed: removed === true,
+                        uuid,
+                        path,
+                        index: args.index
+                    });
+                } catch (error: any) {
+                    return fail('删除数组元素失败', normalizeError(error));
+                }
+            }
+        },
+        {
+            name: 'component_reset_property',
+            description: '重置属性到默认值（scene.reset-property）',
+            layer: 'official',
+            category: 'component',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    uuid: { type: 'string', description: '对象 UUID（节点或组件）' },
+                    path: { type: 'string', description: '属性路径' },
+                    value: { description: '可选，透传给 dump.value' },
+                    valueType: { type: 'string', description: '可选，dump.type' },
+                    record: { type: 'boolean', description: '可选，是否记录 undo' }
+                },
+                required: ['uuid', 'path']
+            },
+            requiredCapabilities: ['scene.reset-property'],
+            run: async (args: any) => {
+                const uuid = toNonEmptyString(args?.uuid);
+                const path = toNonEmptyString(args?.path);
+                if (!uuid || !path) {
+                    return fail('uuid/path 必填', undefined, 'E_INVALID_ARGUMENT');
+                }
+
+                const dump: Record<string, any> = {
+                    value: Object.prototype.hasOwnProperty.call(args || {}, 'value') ? args.value : null
+                };
+                const valueType = toNonEmptyString(args?.valueType);
+                if (valueType) {
+                    dump.type = valueType;
+                }
+
+                const payload: Record<string, any> = {
+                    uuid,
+                    path,
+                    dump
+                };
+                if (typeof args?.record === 'boolean') {
+                    payload.record = args.record;
+                }
+
+                try {
+                    const reset = await requester('scene', 'reset-property', payload);
+                    return ok({
+                        reset: reset === true,
+                        uuid,
+                        path,
+                        dump
+                    });
+                } catch (error: any) {
+                    return fail('重置属性失败', normalizeError(error));
+                }
+            }
         }
     ];
 }

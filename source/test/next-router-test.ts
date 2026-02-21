@@ -1028,6 +1028,9 @@ async function testPrefabLifecycleTools(): Promise<void> {
     const createNodeCalls: any[] = [];
     const removeNodeCalls: any[] = [];
     const applyCalls: any[] = [];
+    const createPrefabCalls: any[] = [];
+    const linkPrefabCalls: any[] = [];
+    const unlinkPrefabCalls: any[] = [];
     const queriedAssetUuids: string[] = [];
     let createAttempt = 0;
 
@@ -1035,12 +1038,21 @@ async function testPrefabLifecycleTools(): Promise<void> {
         'node-prefab-1': { state: 1, assetUuid: 'asset-prefab-1' },
         'node-prefab-2': { state: 1, assetUuid: 'asset-prefab-1' },
         'node-created-invalid': null,
-        'node-created-from-prefab': { state: 1, assetUuid: 'asset-prefab-1' }
+        'node-created-from-prefab': { state: 1, assetUuid: 'asset-prefab-1' },
+        'node-link-target': null
     };
+    const createdPrefabAssets: Record<string, string> = {};
 
     const requester = async (channel: string, method: string, ...args: any[]): Promise<any> => {
         if (channel === 'asset-db' && method === 'query-asset-info') {
             queriedAssetUuids.push(args[0]);
+            if (typeof args[0] === 'string' && createdPrefabAssets[args[0]]) {
+                return {
+                    uuid: createdPrefabAssets[args[0]],
+                    url: args[0],
+                    type: 'cc.Prefab'
+                };
+            }
             return {
                 uuid: args[0],
                 type: 'cc.Prefab'
@@ -1083,6 +1095,73 @@ async function testPrefabLifecycleTools(): Promise<void> {
             applyCalls.push(args[0]);
             return true;
         }
+        if (method === 'create-prefab') {
+            createPrefabCalls.push(args);
+            const firstArg = args[0];
+            const secondArg = args[1];
+            let nodeUuid: string | undefined;
+            let targetUrl: string | undefined;
+            if (typeof firstArg === 'string' && typeof secondArg === 'string') {
+                nodeUuid = firstArg;
+                targetUrl = secondArg;
+            } else if (firstArg && typeof firstArg === 'object') {
+                nodeUuid = firstArg.uuid || firstArg.nodeUuid || firstArg.node;
+                targetUrl = firstArg.url || firstArg.targetUrl;
+            }
+
+            if (!nodeUuid || !targetUrl) {
+                throw new Error('invalid create-prefab arguments');
+            }
+
+            const newAssetUuid = 'asset-created-prefab-1';
+            createdPrefabAssets[targetUrl] = newAssetUuid;
+            return { uuid: newAssetUuid };
+        }
+        if (method === 'link-prefab') {
+            const firstArg = args[0];
+            const secondArg = args[1];
+            let nodeUuid: string | undefined;
+            let assetUuid: string | undefined;
+            if (typeof firstArg === 'string' && typeof secondArg === 'string') {
+                nodeUuid = firstArg;
+                assetUuid = secondArg;
+            } else if (firstArg && typeof firstArg === 'object') {
+                nodeUuid = firstArg.uuid || firstArg.node;
+                assetUuid = firstArg.assetUuid || firstArg.prefab;
+            }
+
+            if (!nodeUuid || !assetUuid) {
+                throw new Error('invalid link-prefab arguments');
+            }
+            if (nodeUuid === 'node-created-invalid') {
+                throw new Error('mock link-prefab failed');
+            }
+
+            linkPrefabCalls.push({ nodeUuid, assetUuid });
+            prefabNodeStates[nodeUuid] = { state: 1, assetUuid };
+            return true;
+        }
+        if (method === 'unlink-prefab') {
+            const firstArg = args[0];
+            const secondArg = args[1];
+            let nodeUuid: string | undefined;
+            let removeNested = false;
+            if (typeof firstArg === 'string') {
+                nodeUuid = firstArg;
+                removeNested = Boolean(secondArg);
+            } else if (firstArg && typeof firstArg === 'object') {
+                nodeUuid = firstArg.uuid || firstArg.node;
+                removeNested = Boolean(firstArg.removeNested);
+            }
+
+            if (!nodeUuid) {
+                throw new Error('invalid unlink-prefab arguments');
+            }
+
+            unlinkPrefabCalls.push({ nodeUuid, removeNested });
+            prefabNodeStates[nodeUuid] = null;
+            return true;
+        }
         if (method === 'restore-prefab') {
             restoreCalls.push(args[0].uuid);
             return true;
@@ -1106,6 +1185,9 @@ async function testPrefabLifecycleTools(): Promise<void> {
         'scene.query-nodes-by-asset-uuid',
         'scene.query-node',
         'scene.apply-prefab',
+        'scene.create-prefab',
+        'scene.link-prefab',
+        'scene.unlink-prefab',
         'scene.restore-prefab',
         'scene.reset-node',
         'scene.reset-component',
@@ -1122,6 +1204,9 @@ async function testPrefabLifecycleTools(): Promise<void> {
     assert.ok(listResponse);
     const toolNames = listResponse!.result.tools.map((item: any) => item.name);
     assert.ok(toolNames.includes('prefab_create_instance'));
+    assert.ok(toolNames.includes('prefab_create_asset_from_node'));
+    assert.ok(toolNames.includes('prefab_link_node_to_asset'));
+    assert.ok(toolNames.includes('prefab_unlink_instance'));
     assert.ok(toolNames.includes('prefab_query_nodes_by_asset_uuid'));
     assert.ok(toolNames.includes('prefab_get_instance_info'));
     assert.ok(toolNames.includes('prefab_apply_instance'));
@@ -1151,6 +1236,56 @@ async function testPrefabLifecycleTools(): Promise<void> {
     assert.strictEqual(removeNodeCalls[0].uuid, 'node-created-invalid');
     assert.strictEqual(queriedAssetUuids.length, 1);
     assert.strictEqual(queriedAssetUuids[0], 'asset-prefab-1');
+
+    const createPrefabAsset = await router.handle({
+        jsonrpc: '2.0',
+        id: 401,
+        method: 'tools/call',
+        params: {
+            name: 'prefab_create_asset_from_node',
+            arguments: {
+                nodeUuid: 'node-prefab-1',
+                targetUrl: 'db://assets/generated/new.prefab'
+            }
+        }
+    });
+    assert.ok(createPrefabAsset);
+    assert.strictEqual(createPrefabAsset!.result.isError, false);
+    assert.strictEqual(createPrefabCalls.length, 1);
+    assert.strictEqual(createPrefabAsset!.result.structuredContent.data.prefabUuid, 'asset-created-prefab-1');
+
+    const linkNode = await router.handle({
+        jsonrpc: '2.0',
+        id: 402,
+        method: 'tools/call',
+        params: {
+            name: 'prefab_link_node_to_asset',
+            arguments: {
+                nodeUuid: 'node-link-target',
+                assetUuid: 'asset-prefab-link-1'
+            }
+        }
+    });
+    assert.ok(linkNode);
+    assert.strictEqual(linkNode!.result.isError, false);
+    assert.strictEqual(linkPrefabCalls.length, 1);
+    assert.strictEqual(linkNode!.result.structuredContent.data.after.prefabAssetUuid, 'asset-prefab-link-1');
+
+    const unlinkNode = await router.handle({
+        jsonrpc: '2.0',
+        id: 403,
+        method: 'tools/call',
+        params: {
+            name: 'prefab_unlink_instance',
+            arguments: {
+                nodeUuid: 'node-link-target',
+                removeNested: true
+            }
+        }
+    });
+    assert.ok(unlinkNode);
+    assert.strictEqual(unlinkNode!.result.isError, false);
+    assert.strictEqual(unlinkPrefabCalls.length, 1);
 
     const queryNodes = await router.handle({
         jsonrpc: '2.0',

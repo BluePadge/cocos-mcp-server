@@ -28,6 +28,10 @@
 - [x] 阶段 14：调试与诊断能力域迁移（编译状态/日志/插件信息/性能快照）
 - [x] 阶段 15：运行控制与测试闭环能力域迁移（就绪等待/脚本执行/软重载/快照）
 - [x] 阶段 16：Prefab 调用专项修复（去除假成功 + 3.8.8 在线回归）
+- [x] 阶段 17：Prefab 资产级工作流首批迁移（create/link/unlink）
+- [x] 阶段 18：剩余官方能力收敛（scene/component/asset/project/preferences/information/program）
+- [x] 阶段 19：重启脚本稳定性修复 + 新能力在线冒烟回归
+- [x] 阶段 20：`prefab_link` fallback 闭环 + probe 安全化 + 在线 smoke 自动化
 
 ## TODO
 - [x] 产出 `backend/coplay-cocos-capability-map.md`
@@ -80,6 +84,21 @@
 - [x] Prefab 专项修复：`prefab_apply_instance` 改为“仅允许对已关联实例 apply”，避免非实例假成功
 - [x] 扩展 `next-router-test` 以覆盖 Prefab 新行为（多候选创建、`remove-node` 清理、`asset-db.query-asset-info`）
 - [x] HelloWorld 在线回归：`prefab_create_instance -> prefab_get_instance_info -> prefab_apply_instance -> prefab_query_nodes_by_asset_uuid`
+- [x] Prefab 资产级首批：新增 `prefab_create_asset_from_node` / `prefab_link_node_to_asset` / `prefab_unlink_instance`
+- [x] 扩展能力目录：`scene.create-prefab` / `scene.link-prefab` / `scene.unlink-prefab`（extended）
+- [x] 扩展 `next-router-test` 覆盖 Prefab 资产级首批工具
+- [x] HelloWorld 在线回归：`create node -> create prefab asset -> link -> unlink -> cleanup`
+- [x] 补齐剩余官方能力工具（`scene.copy/cut/paste/save-as-scene/query-component/query-classes/query-component-has-script/execute-component-method/move-array-element/remove-array-element/reset-property/is-native`）
+- [x] 补齐剩余官方能力工具（`asset-db.generate-available-url/query-asset-meta/query-missing-asset-info/create-asset/import-asset/save-asset/save-asset-meta`）
+- [x] 补齐剩余官方能力工具（`project.open-settings/set-config`、`preferences.open-settings/set-config`、`information.open-information-dialog/has-dialog/close-dialog`、`program.open-program/open-url`）
+- [x] 扩展能力目录 `method-catalog` 覆盖上述能力键并消除工具声明缺口
+- [x] 新增 `source/test/next-router-advanced-tools-test.ts` 并接入 `npm run test:mcp`
+- [x] 修复 `scripts/restart-cocos-project.sh`：关闭全部 Cocos 实例、按目标工程校验、使用 `open -na` 启动
+- [x] HelloWorld 在线冒烟验证新增能力可见性与基础调用
+- [x] 修复 `prefab_link_node_to_asset` fallback：替换节点支持多候选创建 + 二次 link/restore 校验 + 失败回滚
+- [x] 能力探测安全化：高副作用检查改为 `assume_available` 跳过真实调用
+- [x] 新增在线冒烟脚本 `scripts/mcp-online-smoke.js` 并接入 `npm run smoke:mcp:online`
+- [x] HelloWorld 在线回归：`prefab_create_asset_from_node -> prefab_link_node_to_asset -> prefab_get_instance_info`
 - [x] `npm run build`
 - [x] `npm run test:mcp`
 
@@ -95,12 +114,12 @@
    - `PROJECT_PATH=/Users/blue/Developer/CocosProjects/HelloWorld`
 2. 定位该工程实例 PID：
    - `pgrep -af \"CocosCreator.*--project ${PROJECT_PATH}\"`
-3. 关闭该工程实例（仅关闭目标工程，不误杀其它 Cocos 项目）：
-   - `pkill -TERM -f \"CocosCreator.*--project ${PROJECT_PATH}\"`
-   - 循环等待退出；若超时，再执行：`pkill -KILL -f \"CocosCreator.*--project ${PROJECT_PATH}\"`
-4. 启动目标工程实例：
-   - `\"${COCOS_APP}\" --project \"${PROJECT_PATH}\" --can-show-upgrade-dialog true >/tmp/cocos-helloworld.log 2>&1 &`
-   - 或直接使用脚本：`scripts/restart-cocos-project.sh --project \"${PROJECT_PATH}\"`
+3. 关闭全部 Cocos 主进程（避免被已有实例接管打开请求）：
+   - `pkill -TERM -f \"CocosCreator.app/Contents/MacOS/CocosCreator --project \"`
+   - 循环等待退出；若超时，再执行：`pkill -KILL -f \"CocosCreator.app/Contents/MacOS/CocosCreator --project \"`
+4. 启动目标工程实例（推荐脚本，已内置 `open -na` 与目标工程校验）：
+   - `scripts/restart-cocos-project.sh --project \"${PROJECT_PATH}\"`
+   - 脚本会自动执行：关闭旧实例 -> 启动目标工程 -> health + MCP 握手双就绪判定
 5. 等待 MCP 插件就绪：
    - 轮询 `curl -sS http://127.0.0.1:3000/health`
    - 判定条件：HTTP 成功且返回 `{\"status\":\"ok\",\"tools\":N}` 且 `N>0`（避免 `tools=0` 的早期误判）。
@@ -116,6 +135,7 @@
 > 注意：
 > - `CocosCreator --help` 在 3.8.8 下不会输出参数帮助，反而会启动一个新实例，不要用它做参数探测。
 > - 启动命令以 `--project <path>` 为准，可从现有进程参数中确认。
+> - 在当前 CLI 环境中，Cocos 进程可能在无交互前台时自动退出；自动化冒烟应紧跟重启脚本连续执行，长期驻留调试建议手工打开编辑器窗口。
 
 ## 当前结果
 - 已新增文档：`backend/coplay-cocos-capability-map.md`，明确 coplay 能力域映射与分层策略。
@@ -172,6 +192,29 @@
   - `prefab_apply_instance` 增加前置校验：非 Prefab 实例直接返回 `E_PREFAB_INSTANCE_REQUIRED`，避免历史“假成功”
   - `prefab_apply_instances_by_asset` 限制 `targetPrefabUuid === assetUuid`，避免误导性“跨资源关联”语义
   - `resolveNodeUuid` 增强：兼容 `create-node` 的对象返回形态（`uuid/nodeUuid/id/value`）
+- 阶段 17 新增覆盖点：
+  - 新增 Prefab 资产级工具：`prefab_create_asset_from_node`（节点生成 Prefab 资产并校验资产可查询）
+  - 新增 Prefab 资产级工具：`prefab_link_node_to_asset`（建立节点与 Prefab 资产关联并回读校验）
+  - 新增 Prefab 资产级工具：`prefab_unlink_instance`（解除关联并校验节点已无 Prefab 绑定）
+  - 能力探测扩展：`scene.create-prefab` / `scene.link-prefab` / `scene.unlink-prefab`
+  - 能力探测稳健性补强：`CapabilityProbe` 的 `create-node` 回滚支持对象形态 UUID 解析
+- 阶段 18 新增覆盖点：
+  - 场景/组件官方缺口补齐：`scene_copy_game_object`、`scene_cut_game_object`、`scene_paste_game_object`、`scene_save_as_scene`
+  - 组件官方缺口补齐：`component_get_component_info`、`component_query_classes`、`component_has_script`、`component_execute_method`、`component_move_array_element`、`component_remove_array_element`、`component_reset_property`
+  - 资产官方缺口补齐：`asset_generate_available_url`、`asset_query_asset_meta`、`asset_query_missing_asset_info`、`asset_create_asset`、`asset_import_asset`、`asset_save_asset`、`asset_save_asset_meta`
+  - 工程/编辑器官方缺口补齐：`project_open_settings`、`project_set_config`、`preferences_open_settings`、`preferences_set_config`、`scene_query_is_native`、`information_open_dialog`、`information_has_dialog`、`information_close_dialog`、`program_open_program`、`program_open_url`
+  - 能力目录补齐：`method-catalog` 与 `requiredCapabilities` 已对齐（缺口清零）
+  - 新增回归测试：`source/test/next-router-advanced-tools-test.ts`
+- 阶段 19 新增覆盖点：
+  - `scripts/restart-cocos-project.sh` 修复为“先关闭全部 Cocos 实例，再按目标工程启动”
+  - 启动方式改为 `open -na <CocosCreator.app> --args ...`，并增加目标工程进程校验，避免误判其他工程实例
+  - 自动化在线冒烟验证：新增能力域工具可见并可调用（`tools.total=106`）
+- 阶段 20 新增覆盖点：
+  - `prefab_link_node_to_asset` fallback 重构：引入多候选 `create-node`（含 `assetType`/`assetUuid` 兼容形态），每次创建后执行实例校验，必要时补做 `link-prefab/restore-prefab` 再校验
+  - `prefab_link` 在线闭环修复：在 HelloWorld(3.8.8) 中，`link` 回包 `replaced=true`，且 `prefab_get_instance_info.isPrefabInstance=true`
+  - 能力探测安全化落地：`scene.open-scene`、`asset-db.open-asset`、`program.open-url` 等高副作用方法改为 `probeStrategy=assume_available`
+  - 自动化在线 smoke：新增 `npm run smoke:mcp:online`，覆盖握手、工具可见性、读写调用、清理四段流程
+  - 流程记忆：代码变更后必须重启 Cocos 实例才能加载最新 `dist`，否则在线验证会命中旧实现
 - 主入口挂接结果：
   - `source/mcp-server.ts` 已不再依赖 `V2ToolService` 处理工具请求，改为 Next router 统一分发
   - `source/mcp-server.ts` 通过 `nextRuntimeFactory` 支持测试注入与生产默认 runtime
@@ -212,6 +255,19 @@
   - 回读校验通过：`prefab_get_instance_info.isPrefabInstance=true`，`prefabAssetUuid=2e3822ac-c1f1-4a95-aaa5-2e0c116ca056`
   - 查询校验通过：`prefab_query_nodes_by_asset_uuid.count=1` 且包含新建节点 UUID
   - `prefab_apply_instance` 在线调用成功并保持实例状态；之后已用 `scene_delete_game_object` 清理测试节点
+- 在线验证补充（Prefab 资产级首批批次）：
+  - 重启后 `GET /health` 显示工具数 `78`，新增工具在线可见：`prefab_create_asset_from_node` / `prefab_link_node_to_asset` / `prefab_unlink_instance`
+  - 在线创建临时节点后，`prefab_create_asset_from_node` 成功生成 `db://assets/__mcp_prefab_asset_probe__.prefab`
+  - 资产回读校验：`asset_query_asset_info` 返回 `type=cc.Prefab` 与有效 UUID `9de8e591-48d8-465f-b2de-c27af6dcbf39`
+  - `prefab_link_node_to_asset` 在线调用成功，回读 `prefab_get_instance_info.isPrefabInstance=true`
+  - `prefab_unlink_instance` 在线调用成功，回读 `prefab_get_instance_info.isPrefabInstance=false`
+  - 冒烟后已清理临时节点与临时 Prefab 资产，`asset_query_asset_info` 回读为 `assetInfo=null`
+- 在线验证补充（阶段 18/19 批次）：
+  - 重启后 `GET /health` 显示工具数 `106`，新增目标工具可见：`scene_query_is_native`、`component_query_classes`、`asset_generate_available_url`、`project_open_settings`、`preferences_open_settings`、`information_has_dialog`、`program_open_program`
+  - 在线调用通过：`scene_query_is_native`、`component_query_classes`、`asset_generate_available_url`、`information_has_dialog`、`program_open_program`、`program_open_url`
+  - 本地稳定性验证：重启脚本在存在其它工程实例时可正确切换到 `HelloWorld`，避免被旧实例接管
 - 验证结果：
   - `npm run build` 通过
-  - `npm run test:mcp` 通过（含新增 next 测试）
+  - `npm run test:mcp` 通过（含新增 `next-router-advanced-tools-test`）
+  - `npm run smoke:mcp:online` 通过（在线 `RESULT=PASS`，清理步骤全成功）
+  - HelloWorld 在线回归通过：`prefab_link_node_to_asset` 触发 fallback 后成功建立实例关联

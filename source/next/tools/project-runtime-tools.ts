@@ -18,6 +18,26 @@ function normalizePreferencesProtocol(value: any): PreferencesProtocol | null {
     return null;
 }
 
+function parseOptionalPath(value: any): string | null {
+    if (value === undefined || value === null) {
+        return '';
+    }
+    if (typeof value === 'string') {
+        return value;
+    }
+    return null;
+}
+
+function parseExtraArgs(value: any): any[] | null {
+    if (value === undefined || value === null) {
+        return [];
+    }
+    if (Array.isArray(value)) {
+        return value;
+    }
+    return null;
+}
+
 export function createProjectRuntimeTools(requester: EditorRequester): NextToolDefinition[] {
     return [
         {
@@ -68,6 +88,96 @@ export function createProjectRuntimeTools(requester: EditorRequester): NextToolD
             }
         },
         {
+            name: 'project_open_settings',
+            description: '打开项目设置面板',
+            layer: 'official',
+            category: 'project',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    tab: {
+                        type: 'string',
+                        description: '设置页签，默认 project'
+                    },
+                    subTab: {
+                        type: 'string',
+                        description: '子页签，默认空字符串'
+                    },
+                    args: {
+                        type: 'array',
+                        description: '可选，附加参数'
+                    }
+                }
+            },
+            requiredCapabilities: ['project.open-settings'],
+            run: async (args: any) => {
+                const tab = toNonEmptyString(args?.tab) || 'project';
+                const subTab = typeof args?.subTab === 'string' ? args.subTab : '';
+                const extraArgs = parseExtraArgs(args?.args);
+                if (!extraArgs) {
+                    return fail('args 必须为数组', undefined, 'E_INVALID_ARGUMENT');
+                }
+
+                try {
+                    await requester('project', 'open-settings', tab, subTab, ...extraArgs);
+                    return ok({
+                        opened: true,
+                        tab,
+                        subTab,
+                        args: extraArgs
+                    });
+                } catch (error: any) {
+                    return fail('打开项目设置失败', normalizeError(error));
+                }
+            }
+        },
+        {
+            name: 'project_set_config',
+            description: '修改项目配置项',
+            layer: 'official',
+            category: 'project',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    configType: {
+                        type: 'string',
+                        description: '配置类型，默认 project'
+                    },
+                    path: {
+                        type: 'string',
+                        description: '配置路径，默认空字符串'
+                    },
+                    value: {
+                        description: '要写入的配置值'
+                    }
+                },
+                required: ['value']
+            },
+            requiredCapabilities: ['project.set-config'],
+            run: async (args: any) => {
+                const configType = toNonEmptyString(args?.configType) || 'project';
+                const path = parseOptionalPath(args?.path);
+                if (path === null) {
+                    return fail('path 必须为字符串', undefined, 'E_INVALID_ARGUMENT');
+                }
+                if (!Object.prototype.hasOwnProperty.call(args || {}, 'value')) {
+                    return fail('value 必填', undefined, 'E_INVALID_ARGUMENT');
+                }
+
+                try {
+                    const updated = await requester('project', 'set-config', configType, path, args.value);
+                    return ok({
+                        configType,
+                        path,
+                        value: args.value,
+                        updated: updated === true
+                    });
+                } catch (error: any) {
+                    return fail('修改项目配置失败', normalizeError(error));
+                }
+            }
+        },
+        {
             name: 'preferences_query_config',
             description: '查询编辑器偏好设置',
             layer: 'official',
@@ -111,6 +221,326 @@ export function createProjectRuntimeTools(requester: EditorRequester): NextToolD
                     return ok({ configType, key: key || null, protocol, config });
                 } catch (error: any) {
                     return fail('查询偏好设置失败', normalizeError(error));
+                }
+            }
+        },
+        {
+            name: 'preferences_open_settings',
+            description: '打开偏好设置面板',
+            layer: 'official',
+            category: 'project',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    tab: {
+                        type: 'string',
+                        description: '偏好设置页签，默认 general'
+                    },
+                    args: {
+                        type: 'array',
+                        description: '可选，附加参数'
+                    }
+                }
+            },
+            requiredCapabilities: ['preferences.open-settings'],
+            run: async (args: any) => {
+                const tab = toNonEmptyString(args?.tab) || 'general';
+                const extraArgs = parseExtraArgs(args?.args);
+                if (!extraArgs) {
+                    return fail('args 必须为数组', undefined, 'E_INVALID_ARGUMENT');
+                }
+
+                try {
+                    await requester('preferences', 'open-settings', tab, ...extraArgs);
+                    return ok({
+                        opened: true,
+                        tab,
+                        args: extraArgs
+                    });
+                } catch (error: any) {
+                    return fail('打开偏好设置失败', normalizeError(error));
+                }
+            }
+        },
+        {
+            name: 'preferences_set_config',
+            description: '修改编辑器偏好配置项',
+            layer: 'official',
+            category: 'project',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    configType: {
+                        type: 'string',
+                        description: '配置类型，默认 general'
+                    },
+                    path: {
+                        type: 'string',
+                        description: '配置路径，默认空字符串'
+                    },
+                    value: {
+                        description: '要写入的配置值'
+                    },
+                    protocol: {
+                        type: 'string',
+                        enum: ['default', 'global', 'local'],
+                        description: '可选，偏好配置协议'
+                    }
+                },
+                required: ['value']
+            },
+            requiredCapabilities: ['preferences.set-config'],
+            run: async (args: any) => {
+                const configType = toNonEmptyString(args?.configType) || 'general';
+                const path = parseOptionalPath(args?.path);
+                if (path === null) {
+                    return fail('path 必须为字符串', undefined, 'E_INVALID_ARGUMENT');
+                }
+                if (!Object.prototype.hasOwnProperty.call(args || {}, 'value')) {
+                    return fail('value 必填', undefined, 'E_INVALID_ARGUMENT');
+                }
+
+                const protocol = normalizePreferencesProtocol(args?.protocol);
+                if (args?.protocol !== undefined && !protocol) {
+                    return fail('protocol 仅支持 default/global/local', undefined, 'E_INVALID_ARGUMENT');
+                }
+
+                try {
+                    const updated = protocol
+                        ? await requester('preferences', 'set-config', configType, path, args.value, protocol)
+                        : await requester('preferences', 'set-config', configType, path, args.value);
+                    return ok({
+                        configType,
+                        path,
+                        value: args.value,
+                        protocol: protocol || null,
+                        updated: updated === true
+                    });
+                } catch (error: any) {
+                    return fail('修改偏好配置失败', normalizeError(error));
+                }
+            }
+        },
+        {
+            name: 'scene_query_is_native',
+            description: '查询是否使用原生编辑器模式',
+            layer: 'official',
+            category: 'project',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    checkAvailable: {
+                        type: 'boolean',
+                        description: '是否检查原生编辑器可用性，默认由编辑器决定'
+                    }
+                }
+            },
+            requiredCapabilities: ['scene.is-native'],
+            run: async (args: any) => {
+                const hasCheckAvailable = typeof args?.checkAvailable === 'boolean';
+                try {
+                    const isNative = hasCheckAvailable
+                        ? await requester('scene', 'is-native', { checkAvailable: args.checkAvailable })
+                        : await requester('scene', 'is-native');
+                    return ok({
+                        isNative: isNative === true,
+                        checkAvailable: hasCheckAvailable ? args.checkAvailable : null
+                    });
+                } catch (error: any) {
+                    return fail('查询原生编辑器模式失败', normalizeError(error));
+                }
+            }
+        },
+        {
+            name: 'information_open_dialog',
+            description: '打开 information 对话框',
+            layer: 'official',
+            category: 'project',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    tag: {
+                        type: 'string',
+                        description: '信息标签'
+                    },
+                    dialogOptions: {
+                        type: 'object',
+                        description: '可选，对话框参数'
+                    }
+                },
+                required: ['tag']
+            },
+            requiredCapabilities: ['information.open-information-dialog'],
+            run: async (args: any) => {
+                const tag = toNonEmptyString(args?.tag);
+                if (!tag) {
+                    return fail('tag 必填', undefined, 'E_INVALID_ARGUMENT');
+                }
+
+                const hasDialogOptions = args?.dialogOptions !== undefined;
+                if (hasDialogOptions && (!args.dialogOptions || typeof args.dialogOptions !== 'object' || Array.isArray(args.dialogOptions))) {
+                    return fail('dialogOptions 必须为对象', undefined, 'E_INVALID_ARGUMENT');
+                }
+
+                try {
+                    const action = hasDialogOptions
+                        ? await requester('information', 'open-information-dialog', tag, args.dialogOptions)
+                        : await requester('information', 'open-information-dialog', tag);
+                    return ok({
+                        opened: true,
+                        tag,
+                        action: action || null
+                    });
+                } catch (error: any) {
+                    return fail('打开 information 对话框失败', normalizeError(error));
+                }
+            }
+        },
+        {
+            name: 'information_has_dialog',
+            description: '检查 information 对话框是否已打开',
+            layer: 'official',
+            category: 'project',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    tag: {
+                        type: 'string',
+                        description: '信息标签'
+                    }
+                },
+                required: ['tag']
+            },
+            requiredCapabilities: ['information.has-dialog'],
+            run: async (args: any) => {
+                const tag = toNonEmptyString(args?.tag);
+                if (!tag) {
+                    return fail('tag 必填', undefined, 'E_INVALID_ARGUMENT');
+                }
+
+                try {
+                    const hasDialog = await requester('information', 'has-dialog', tag);
+                    return ok({
+                        tag,
+                        hasDialog: hasDialog === true
+                    });
+                } catch (error: any) {
+                    return fail('检查 information 对话框失败', normalizeError(error));
+                }
+            }
+        },
+        {
+            name: 'information_close_dialog',
+            description: '关闭 information 对话框',
+            layer: 'official',
+            category: 'project',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    tag: {
+                        type: 'string',
+                        description: '信息标签'
+                    }
+                },
+                required: ['tag']
+            },
+            requiredCapabilities: ['information.close-dialog'],
+            run: async (args: any) => {
+                const tag = toNonEmptyString(args?.tag);
+                if (!tag) {
+                    return fail('tag 必填', undefined, 'E_INVALID_ARGUMENT');
+                }
+
+                try {
+                    await requester('information', 'close-dialog', tag);
+                    return ok({
+                        closed: true,
+                        tag
+                    });
+                } catch (error: any) {
+                    return fail('关闭 information 对话框失败', normalizeError(error));
+                }
+            }
+        },
+        {
+            name: 'program_open_program',
+            description: '调用 program.open-program 打开指定程序',
+            layer: 'official',
+            category: 'project',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    programId: {
+                        type: 'string',
+                        description: '程序标识，例如 vscode'
+                    },
+                    options: {
+                        type: 'object',
+                        description: '可选，透传选项'
+                    }
+                },
+                required: ['programId']
+            },
+            requiredCapabilities: ['program.open-program'],
+            run: async (args: any) => {
+                const programId = toNonEmptyString(args?.programId);
+                if (!programId) {
+                    return fail('programId 必填', undefined, 'E_INVALID_ARGUMENT');
+                }
+
+                const options = args?.options && typeof args.options === 'object' ? args.options : undefined;
+                try {
+                    const opened = options
+                        ? await requester('program', 'open-program', programId, options)
+                        : await requester('program', 'open-program', programId);
+                    return ok({
+                        programId,
+                        options: options || null,
+                        opened: opened === true
+                    });
+                } catch (error: any) {
+                    return fail('打开程序失败', normalizeError(error));
+                }
+            }
+        },
+        {
+            name: 'program_open_url',
+            description: '调用 program.open-url 打开外部链接',
+            layer: 'official',
+            category: 'project',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    url: {
+                        type: 'string',
+                        description: '目标链接'
+                    },
+                    options: {
+                        type: 'object',
+                        description: '可选，透传选项'
+                    }
+                },
+                required: ['url']
+            },
+            requiredCapabilities: ['program.open-url'],
+            run: async (args: any) => {
+                const url = toNonEmptyString(args?.url);
+                if (!url) {
+                    return fail('url 必填', undefined, 'E_INVALID_ARGUMENT');
+                }
+
+                const options = args?.options && typeof args.options === 'object' ? args.options : undefined;
+                try {
+                    const opened = options
+                        ? await requester('program', 'open-url', url, options)
+                        : await requester('program', 'open-url', url);
+                    return ok({
+                        url,
+                        options: options || null,
+                        opened: opened === true
+                    });
+                } catch (error: any) {
+                    return fail('打开链接失败', normalizeError(error));
                 }
             }
         },
