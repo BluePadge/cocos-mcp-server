@@ -590,7 +590,7 @@ export function createPrefabLifecycleTools(requester: EditorRequester): NextTool
         },
         {
             name: 'prefab_query_nodes_by_asset_uuid',
-            description: '查询引用指定 Prefab 资源的节点 UUID 列表',
+            description: '查询引用指定 Prefab 资源的节点 UUID 列表（结果可能包含非 Prefab 实例节点）',
             layer: 'official',
             category: 'prefab',
             inputSchema: {
@@ -614,6 +614,64 @@ export function createPrefabLifecycleTools(requester: EditorRequester): NextTool
                         assetUuid,
                         nodeUuids,
                         count: nodeUuids.length
+                    });
+                } catch (error: any) {
+                    return fail('查询 Prefab 引用节点失败', normalizeError(error));
+                }
+            }
+        },
+        {
+            name: 'prefab_query_instance_nodes_by_asset_uuid',
+            description: '查询指定 Prefab 资源对应的 Prefab 实例节点 UUID 列表（过滤非实例引用节点）',
+            layer: 'official',
+            category: 'prefab',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    assetUuid: { type: 'string', description: 'Prefab 资源 UUID' }
+                },
+                required: ['assetUuid']
+            },
+            requiredCapabilities: ['scene.query-nodes-by-asset-uuid', 'scene.query-node'],
+            run: async (args: any) => {
+                const assetUuid = toNonEmptyString(args?.assetUuid);
+                if (!assetUuid) {
+                    return fail('assetUuid 必填', undefined, 'E_INVALID_ARGUMENT');
+                }
+
+                try {
+                    const queried = await requester('scene', 'query-nodes-by-asset-uuid', assetUuid);
+                    const allNodeUuids = Array.isArray(queried) ? queried : [];
+                    const instanceNodeUuids: string[] = [];
+                    const skipped: Array<{ nodeUuid: string; reason: string }> = [];
+
+                    for (const nodeUuid of allNodeUuids) {
+                        try {
+                            const info = await queryPrefabInstanceInfo(requester, nodeUuid);
+                            if (!info.isPrefabInstance) {
+                                skipped.push({ nodeUuid, reason: '节点不是 Prefab 实例' });
+                                continue;
+                            }
+                            if (info.prefabAssetUuid && info.prefabAssetUuid !== assetUuid) {
+                                skipped.push({
+                                    nodeUuid,
+                                    reason: `实例关联资源不匹配（expected=${assetUuid}, actual=${info.prefabAssetUuid})`
+                                });
+                                continue;
+                            }
+                            instanceNodeUuids.push(nodeUuid);
+                        } catch (error: any) {
+                            skipped.push({ nodeUuid, reason: normalizeError(error) });
+                        }
+                    }
+
+                    return ok({
+                        assetUuid,
+                        allNodeUuids,
+                        allCount: allNodeUuids.length,
+                        nodeUuids: instanceNodeUuids,
+                        count: instanceNodeUuids.length,
+                        skipped
                     });
                 } catch (error: any) {
                     return fail('查询 Prefab 实例节点失败', normalizeError(error));

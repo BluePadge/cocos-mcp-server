@@ -60,3 +60,6 @@
 - HTTP 路由已收敛为 `/mcp` 与 `/health`；`/api/*` 与 `/api/tools` 已下线。
 - 构建流程改为先执行 `scripts/clean-dist.js` 再 `tsc`，避免 `dist` 残留旧产物。
 - 历史功能导览已归档到 `docs/archive/FEATURE_GUIDE_CN.md` 与 `docs/archive/FEATURE_GUIDE_EN.md`。
+- `scene_open_scene` 已切换为 `asset-db.open-asset` 主路径（官方 API 直调），保留 URL 兼容候选重试，但不再做额外场景名校验。
+- `diagnostic_get_log_file_info` / `diagnostic_check_compile_status` 在未传 `projectPath` 时，默认优先使用当前打开工程路径（`Editor.Project.path`）定位 `temp/logs/project.log`，降低根路径误判。
+- `prefab_query_nodes_by_asset_uuid` 语义为“引用节点查询”（可能包含非实例）；新增 `prefab_query_instance_nodes_by_asset_uuid` 用于仅返回 Prefab 实例节点。

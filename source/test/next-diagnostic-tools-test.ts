@@ -56,6 +56,7 @@ async function testDiagnosticTools(): Promise<void> {
     const projectPath = path.join(workspace, 'HelloWorld');
     const logDir = path.join(projectPath, 'temp', 'logs');
     const logFilePath = path.join(logDir, 'project.log');
+    const previousEditor = (globalThis as Record<string, any>).Editor;
 
     fs.mkdirSync(logDir, { recursive: true });
     fs.writeFileSync(
@@ -129,6 +130,12 @@ async function testDiagnosticTools(): Promise<void> {
     const router = new NextMcpRouter(registry);
 
     try {
+        (globalThis as Record<string, any>).Editor = {
+            Project: {
+                path: projectPath
+            }
+        };
+
         const list = await router.handle({
             jsonrpc: '2.0',
             id: 1,
@@ -157,8 +164,7 @@ async function testDiagnosticTools(): Promise<void> {
                 name: 'diagnostic_check_compile_status',
                 arguments: {
                     includeLogSummary: true,
-                    lines: 50,
-                    projectPath
+                    lines: 50
                 }
             }
         });
@@ -167,6 +173,7 @@ async function testDiagnosticTools(): Promise<void> {
         assert.strictEqual(compileStatus!.result.structuredContent.data.ready, true);
         assert.strictEqual(compileStatus!.result.structuredContent.data.logSummary.byLevel.ERROR, 1);
         assert.strictEqual(compileStatus!.result.structuredContent.data.logSummary.byLevel.WARN, 1);
+        assert.strictEqual(String(compileStatus!.result.structuredContent.data.logSummary.logFilePath), logFilePath);
 
         const getLogs = await router.handle({
             jsonrpc: '2.0',
@@ -193,15 +200,14 @@ async function testDiagnosticTools(): Promise<void> {
             method: 'tools/call',
             params: {
                 name: 'diagnostic_get_log_file_info',
-                arguments: {
-                    projectPath
-                }
+                arguments: {}
             }
         });
         assert.ok(fileInfo);
         assert.strictEqual(fileInfo!.result.isError, false);
         assert.strictEqual(fileInfo!.result.structuredContent.data.lineCount, 5);
         assert.ok(fileInfo!.result.structuredContent.data.fileSize > 0);
+        assert.strictEqual(String(fileInfo!.result.structuredContent.data.filePath), logFilePath);
 
         const searchLogs = await router.handle({
             jsonrpc: '2.0',
@@ -298,6 +304,11 @@ async function testDiagnosticTools(): Promise<void> {
         assert.strictEqual(plugins!.result.isError, false);
         assert.strictEqual(plugins!.result.structuredContent.data.count, 2);
     } finally {
+        if (previousEditor === undefined) {
+            delete (globalThis as Record<string, any>).Editor;
+        } else {
+            (globalThis as Record<string, any>).Editor = previousEditor;
+        }
         fs.rmSync(workspace, { recursive: true, force: true });
     }
 }

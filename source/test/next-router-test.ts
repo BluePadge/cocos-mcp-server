@@ -205,9 +205,6 @@ async function testLifecycleAndRuntimeTools(): Promise<void> {
     const requester = async (channel: string, method: string, ...args: any[]): Promise<any> => {
         callLog.push({ channel, method, args });
 
-        if (channel === 'scene' && method === 'open-scene') {
-            return undefined;
-        }
         if (channel === 'scene' && method === 'save-scene') {
             return 'db://assets/scenes/boot.scene';
         }
@@ -244,13 +241,16 @@ async function testLifecycleAndRuntimeTools(): Promise<void> {
         if (channel === 'builder' && method === 'query-worker-ready') {
             return true;
         }
+        if (channel === 'asset-db' && method === 'open-asset') {
+            return undefined;
+        }
 
         throw new Error(`Unexpected call: ${channel}.${method}(${JSON.stringify(args)})`);
     };
 
     const tools = createOfficialTools(requester);
     const matrix = createMatrix([
-        'scene.open-scene',
+        'asset-db.open-asset',
         'scene.query-is-ready',
         'scene.query-dirty',
         'scene.query-scene-bounds',
@@ -440,8 +440,8 @@ async function testLifecycleAndRuntimeTools(): Promise<void> {
     assert.strictEqual(workerReady!.result.structuredContent.data.ready, true);
 
     assert.ok(
-        callLog.some((item) => item.channel === 'scene' && item.method === 'open-scene'),
-        '应调用 scene.open-scene'
+        callLog.some((item) => item.channel === 'asset-db' && item.method === 'open-asset'),
+        '应调用 asset-db.open-asset'
     );
 }
 
@@ -1037,6 +1037,7 @@ async function testPrefabLifecycleTools(): Promise<void> {
     const prefabNodeStates: Record<string, { state: number; assetUuid: string } | null> = {
         'node-prefab-1': { state: 1, assetUuid: 'asset-prefab-1' },
         'node-prefab-2': { state: 1, assetUuid: 'asset-prefab-1' },
+        'node-ref-only': null,
         'node-created-invalid': null,
         'node-created-from-prefab': { state: 1, assetUuid: 'asset-prefab-1' },
         'node-link-target': null
@@ -1064,7 +1065,7 @@ async function testPrefabLifecycleTools(): Promise<void> {
         }
 
         if (method === 'query-nodes-by-asset-uuid') {
-            return ['node-prefab-1', 'node-prefab-2'];
+            return ['node-prefab-1', 'node-ref-only', 'node-prefab-2'];
         }
         if (method === 'create-node') {
             createNodeCalls.push(args[0]);
@@ -1208,6 +1209,7 @@ async function testPrefabLifecycleTools(): Promise<void> {
     assert.ok(toolNames.includes('prefab_link_node_to_asset'));
     assert.ok(toolNames.includes('prefab_unlink_instance'));
     assert.ok(toolNames.includes('prefab_query_nodes_by_asset_uuid'));
+    assert.ok(toolNames.includes('prefab_query_instance_nodes_by_asset_uuid'));
     assert.ok(toolNames.includes('prefab_get_instance_info'));
     assert.ok(toolNames.includes('prefab_apply_instance'));
     assert.ok(toolNames.includes('prefab_apply_instances_by_asset'));
@@ -1300,7 +1302,24 @@ async function testPrefabLifecycleTools(): Promise<void> {
     });
     assert.ok(queryNodes);
     assert.strictEqual(queryNodes!.result.isError, false);
-    assert.strictEqual(queryNodes!.result.structuredContent.data.count, 2);
+    assert.strictEqual(queryNodes!.result.structuredContent.data.count, 3);
+
+    const queryInstanceNodes = await router.handle({
+        jsonrpc: '2.0',
+        id: 411,
+        method: 'tools/call',
+        params: {
+            name: 'prefab_query_instance_nodes_by_asset_uuid',
+            arguments: {
+                assetUuid: 'asset-prefab-1'
+            }
+        }
+    });
+    assert.ok(queryInstanceNodes);
+    assert.strictEqual(queryInstanceNodes!.result.isError, false);
+    assert.strictEqual(queryInstanceNodes!.result.structuredContent.data.count, 2);
+    assert.strictEqual(queryInstanceNodes!.result.structuredContent.data.skipped.length, 1);
+    assert.strictEqual(queryInstanceNodes!.result.structuredContent.data.skipped[0].nodeUuid, 'node-ref-only');
 
     const instanceInfo = await router.handle({
         jsonrpc: '2.0',
@@ -1347,6 +1366,7 @@ async function testPrefabLifecycleTools(): Promise<void> {
     assert.ok(applyBatch);
     assert.strictEqual(applyBatch!.result.isError, false);
     assert.strictEqual(applyBatch!.result.structuredContent.data.successCount, 2);
+    assert.strictEqual(applyBatch!.result.structuredContent.data.failureCount, 1);
     assert.strictEqual(applyCalls.length, 3);
     assert.strictEqual(typeof applyCalls[0], 'string');
 
@@ -1377,7 +1397,7 @@ async function testPrefabLifecycleTools(): Promise<void> {
     });
     assert.ok(restoreBatch);
     assert.strictEqual(restoreBatch!.result.isError, false);
-    assert.strictEqual(restoreBatch!.result.structuredContent.data.successCount, 2);
+    assert.strictEqual(restoreBatch!.result.structuredContent.data.successCount, 3);
 
     const resetNode = await router.handle({
         jsonrpc: '2.0',
@@ -1408,9 +1428,10 @@ async function testPrefabLifecycleTools(): Promise<void> {
     assert.ok(resetComponent);
     assert.strictEqual(resetComponent!.result.isError, false);
     assert.strictEqual(resetComponentCalls.length, 1);
-    assert.ok(restoreCalls.length >= 3);
+    assert.ok(restoreCalls.length >= 4);
     assert.ok(restoreCalls.includes('node-prefab-1'));
     assert.ok(restoreCalls.includes('node-prefab-2'));
+    assert.ok(restoreCalls.includes('node-ref-only'));
 }
 
 async function testUnknownTool(): Promise<void> {

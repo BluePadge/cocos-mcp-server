@@ -155,12 +155,36 @@ function resolveProjectPathFromConfig(config: any): string | null {
     return null;
 }
 
+function resolveProjectPathFromEditor(): string | null {
+    const editorProjectPath = (globalThis as Record<string, any>)?.Editor?.Project?.path;
+    if (typeof editorProjectPath !== 'string') {
+        return null;
+    }
+    const value = editorProjectPath.trim();
+    return value === '' ? null : value;
+}
+
+function toExistingDirectory(value: string | null): string | null {
+    if (!value) {
+        return null;
+    }
+
+    const resolvedPath = path.resolve(value);
+    try {
+        const stat = fs.statSync(resolvedPath);
+        return stat.isDirectory() ? resolvedPath : null;
+    } catch {
+        return null;
+    }
+}
+
 async function buildLogCandidates(requester: EditorRequester, args: any): Promise<string[]> {
     const explicitLogFilePath = toNonEmptyString(args?.logFilePath);
     const explicitProjectPath = toNonEmptyString(args?.projectPath);
+    const projectPathFromEditor = !explicitLogFilePath ? resolveProjectPathFromEditor() : null;
 
     let projectPathFromConfig: string | null = null;
-    if (!explicitLogFilePath && !explicitProjectPath) {
+    if (!explicitLogFilePath) {
         try {
             const config = await requester('project', 'query-config', 'project');
             projectPathFromConfig = resolveProjectPathFromConfig(config);
@@ -169,10 +193,15 @@ async function buildLogCandidates(requester: EditorRequester, args: any): Promis
         }
     }
 
+    const projectPathCandidates = uniquePaths([
+        explicitProjectPath ? path.resolve(explicitProjectPath) : '',
+        projectPathFromEditor ? path.resolve(projectPathFromEditor) : '',
+        projectPathFromConfig ? path.resolve(projectPathFromConfig) : ''
+    ]).filter((item) => toExistingDirectory(item) !== null);
+
     const candidates = uniquePaths([
         explicitLogFilePath ? path.resolve(explicitLogFilePath) : '',
-        explicitProjectPath ? path.join(path.resolve(explicitProjectPath), DEFAULT_LOG_RELATIVE_PATH) : '',
-        projectPathFromConfig ? path.join(path.resolve(projectPathFromConfig), DEFAULT_LOG_RELATIVE_PATH) : '',
+        ...projectPathCandidates.map((projectPath) => path.join(projectPath, DEFAULT_LOG_RELATIVE_PATH)),
         path.join(process.cwd(), DEFAULT_LOG_RELATIVE_PATH)
     ]);
 

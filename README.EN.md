@@ -81,6 +81,16 @@ codex -C "/your-project-root" \
 - Diagnostics/runtime control: `diagnostic_*`, `runtime_*`
 - Project/preferences/program info: `project_*`, `preferences_*`, `information_*`, `program_*`
 
+## Key Tool Semantics (2.0.0+)
+- `scene_open_scene`:
+  - Implemented as a direct official call to `asset-db.open-asset` (with URL candidate retry).
+  - Accepts only `sceneUrl`; `verifyTimeoutMs` / `verifyIntervalMs` are no longer supported.
+- `prefab_query_nodes_by_asset_uuid`:
+  - This is a "reference-node query" and may include nodes that are not Prefab instances.
+  - For instance-only results, use `prefab_query_instance_nodes_by_asset_uuid`.
+- `diagnostic_get_log_file_info` / `diagnostic_check_compile_status`:
+  - When `projectPath` is omitted, they now default to the currently opened project path to locate `temp/logs/project.log`.
+
 ## Development Commands
 ```bash
 npm run build

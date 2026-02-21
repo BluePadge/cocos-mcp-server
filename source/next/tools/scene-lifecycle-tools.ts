@@ -1,6 +1,40 @@
 import { EditorRequester, NextToolDefinition } from '../models';
 import { fail, normalizeError, ok, toNonEmptyString, toStringList } from './common';
 
+function buildSceneOpenCandidates(sceneUrl: string): string[] {
+    const normalized = sceneUrl.trim();
+    const candidates: string[] = [];
+
+    if (normalized.startsWith('import://db/')) {
+        const fromImport = normalized.slice('import://db/'.length).replace(/^\/+/, '');
+        candidates.push(normalized);
+        if (fromImport) {
+            candidates.push(`db://${fromImport}`);
+            candidates.push(fromImport);
+        }
+    }
+
+    if (normalized.startsWith('db://')) {
+        candidates.push(normalized);
+        const withoutDb = normalized.slice('db://'.length).replace(/^\/+/, '');
+        if (withoutDb) {
+            candidates.push(withoutDb);
+        }
+    } else {
+        candidates.push(normalized);
+    }
+
+    if (normalized.startsWith('assets/')) {
+        candidates.push(`db://${normalized}`);
+    }
+
+    return Array.from(
+        new Set(
+            candidates.filter((item) => item.trim() !== '')
+        )
+    );
+}
+
 export function createSceneLifecycleTools(requester: EditorRequester): NextToolDefinition[] {
     return [
         {
@@ -18,19 +52,32 @@ export function createSceneLifecycleTools(requester: EditorRequester): NextToolD
                 },
                 required: ['sceneUrl']
             },
-            requiredCapabilities: ['scene.open-scene'],
+            requiredCapabilities: ['asset-db.open-asset'],
             run: async (args: any) => {
                 const sceneUrl = toNonEmptyString(args?.sceneUrl);
                 if (!sceneUrl) {
                     return fail('sceneUrl 必填', undefined, 'E_INVALID_ARGUMENT');
                 }
 
-                try {
-                    await requester('scene', 'open-scene', sceneUrl);
-                    return ok({ opened: true, sceneUrl });
-                } catch (error: any) {
-                    return fail('打开场景失败', normalizeError(error));
+                const candidates = buildSceneOpenCandidates(sceneUrl);
+                const attemptErrors: string[] = [];
+
+                for (const candidate of candidates) {
+                    try {
+                        await requester('asset-db', 'open-asset', candidate);
+                        return ok({
+                            opened: true,
+                            sceneUrl,
+                            resolvedSceneUrl: candidate,
+                            attempts: candidates.length,
+                            openMethod: 'asset-db.open-asset'
+                        });
+                    } catch (error: any) {
+                        attemptErrors.push(`[${candidate}] ${normalizeError(error)}`);
+                    }
                 }
+
+                return fail('打开场景失败', attemptErrors.join(' | '));
             }
         },
         {

@@ -81,6 +81,16 @@ codex -C "/你的项目根目录" \
 - 诊断与运行控制：`diagnostic_*`、`runtime_*`
 - 工程/偏好/程序信息：`project_*`、`preferences_*`、`information_*`、`program_*`
 
+## 关键工具语义（2.0.0+）
+- `scene_open_scene`：
+  - 当前实现为官方 `asset-db.open-asset` 直调（带 URL 候选重试）。
+  - 仅接收 `sceneUrl` 参数；不再支持 `verifyTimeoutMs` / `verifyIntervalMs`。
+- `prefab_query_nodes_by_asset_uuid`：
+  - 语义为“引用节点查询”，返回结果可能包含非 Prefab 实例节点。
+  - 如需仅实例节点，请使用 `prefab_query_instance_nodes_by_asset_uuid`。
+- `diagnostic_get_log_file_info` / `diagnostic_check_compile_status`：
+  - 未传 `projectPath` 时，默认优先使用当前打开工程路径定位 `temp/logs/project.log`。
+
 ## 开发命令
 ```bash
 npm run build

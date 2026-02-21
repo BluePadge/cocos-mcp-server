@@ -12,7 +12,7 @@
         "watch": "tsc -w",
         "mcp:stdio": "node ./dist/stdio-http-bridge.js",
         "smoke:mcp:online": "node ./scripts/mcp-online-smoke.js",
-        "test:mcp": "node ./dist/test/mcp-protocol-compliance-test.js && node ./dist/test/mcp-streamable-http-test.js && node ./dist/test/mcp-stdio-bridge-test.js && node ./dist/test/next-manifest-test.js && node ./dist/test/next-workflow-test.js && node ./dist/test/next-capability-probe-test.js && node ./dist/test/next-router-test.js && node ./dist/test/next-router-advanced-tools-test.js && node ./dist/test/next-diagnostic-tools-test.js && node ./dist/test/next-runtime-control-tools-test.js"
+        "test:mcp": "node ./dist/test/mcp-protocol-compliance-test.js && node ./dist/test/mcp-streamable-http-test.js && node ./dist/test/mcp-stdio-bridge-test.js && node ./dist/test/next-manifest-test.js && node ./dist/test/next-workflow-test.js && node ./dist/test/next-capability-probe-test.js && node ./dist/test/next-router-test.js && node ./dist/test/next-scene-open-compat-test.js && node ./dist/test/next-router-advanced-tools-test.js && node ./dist/test/next-diagnostic-tools-test.js && node ./dist/test/next-runtime-control-tools-test.js"
     },
     "description": "i18n:cocos-mcp-server.description",
     "main": "./dist/main.js",
